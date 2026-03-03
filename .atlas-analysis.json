@@ -1,0 +1,110 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "Ghoten",
+  "projectDescription": "OpenTofu fork with native ORAS backend for storing state in OCI registries like GHCR",
+  "theme": "aspen",
+  "primaryColor": "#7B42F6",
+  "lightColor": "#9D6FF8",
+  "darkColor": "#6030D4",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/oras-backend",
+              "concepts/state-management",
+              "concepts/locking-versioning"
+            ]
+          },
+          {
+            "group": "Usage",
+            "pages": [
+              "usage/installation",
+              "usage/configuration",
+              "usage/authentication",
+              "usage/github-action"
+            ]
+          },
+          {
+            "group": "Commands",
+            "pages": [
+              "commands/overview",
+              "commands/init",
+              "commands/plan",
+              "commands/apply",
+              "commands/destroy"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "development/testing",
+              "development/building",
+              "development/contributing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Backend Configuration",
+            "pages": [
+              "reference/backend-config",
+              "reference/backend-parameters",
+              "reference/environment-variables"
+            ]
+          },
+          {
+            "group": "GitHub Action",
+            "pages": [
+              "reference/action-inputs",
+              "reference/action-outputs",
+              "reference/action-examples"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/compression",
+              "advanced/encryption",
+              "advanced/rate-limiting",
+              "advanced/troubleshooting"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Native ORAS backend for OCI registries",
+    "Atomic locking and state versioning",
+    "Built-in compression and retry logic",
+    "GitHub Action with PR comments and summaries",
+    "GHCR authentication integration",
+    "Automatic stale lock cleanup",
+    "Historical state version retention"
+  ],
+  "publicApiSurface": [
+    "ghoten init - Initialize working directory with ORAS backend",
+    "ghoten plan - Show infrastructure changes",
+    "ghoten apply - Apply infrastructure changes",
+    "ghoten destroy - Destroy managed infrastructure",
+    "ghoten validate - Validate configuration files",
+    "ghoten fmt - Format configuration files",
+    "backend \"oras\" - ORAS backend configuration block",
+    "vmvarela/ghoten@v1 - GitHub Action",
+    "TF_BACKEND_ORAS_* - Environment variables for backend configuration"
+  ]
+}

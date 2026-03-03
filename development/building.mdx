@@ -1,0 +1,158 @@
+---
+title: Building from Source
+description: How to build Ghoten from source
+---
+
+## Prerequisites
+
+Before building Ghoten, ensure you have:
+
+- **Go** - version specified in [go.mod](https://github.com/vmvarela/ghoten/blob/master/go.mod)
+- **Make** - for build automation
+- **Git** - for version control
+- **Docker** (optional) - for running integration tests
+
+## Building Ghoten
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/vmvarela/ghoten.git
+    cd ghoten
+    ```
+  </Step>
+  
+  <Step title="Build the binary">
+    ```bash
+    make build
+    ```
+    
+    This creates the `ghoten` binary (or `ghoten.exe` on Windows) in the current directory.
+    
+    The version is automatically set to the git tag or commit hash:
+    ```bash
+    go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" -o ghoten ./cmd/ghoten
+    ```
+  </Step>
+  
+  <Step title="Verify the build">
+    ```bash
+    ./ghoten version
+    ```
+    
+    Expected output:
+    ```
+    Ghoten v1.2.3-4-g1a2b3c4
+    ```
+  </Step>
+</Steps>
+
+## Development build targets
+
+### Generate dynamic source files
+
+Run `go generate` to build dynamically generated source files:
+
+```bash
+make generate
+```
+
+<Note>
+  This does not generate protobuf stubs. Use `make protobuf` for that.
+</Note>
+
+### Generate protobuf files
+
+If you're working on changes to protobuf interfaces:
+
+```bash
+make protobuf
+```
+
+This regenerates all protobuf stubs using the expected versions of protoc and the protoc Go plugins.
+
+<Warning>
+  Most development tasks don't involve changing protobuf files, and protoc is not a go-gettable dependency, so getting it installed can be inconvenient.
+</Warning>
+
+## Code quality
+
+### Run linters
+
+```bash
+make golangci-lint
+```
+
+This:
+1. Installs `golangci-lint` v2.6.0 to `tools/` directory
+2. Runs linting for Windows platform
+3. Runs linting for Linux platform
+
+### Run tests
+
+See the [Testing](/development/testing) page for comprehensive testing documentation.
+
+Quick test run:
+
+```bash
+make test
+```
+
+With coverage:
+
+```bash
+make test-with-coverage
+```
+
+## Build output
+
+The build process creates:
+
+- **Binary**: `ghoten` (or `ghoten.exe` on Windows) in the project root
+- **Version**: Embedded using git tags via `-ldflags`
+- **Coverage files** (when running tests with coverage):
+  - `coverage.out` - raw coverage data
+  - `coverage.html` - HTML coverage report
+
+## Make targets reference
+
+View all available Make targets:
+
+```bash
+make help
+```
+
+Common targets:
+
+| Target | Description |
+|---|---|
+| `make build` | Build ghoten binary with version from git |
+| `make test` | Run unit tests across all packages |
+| `make test-with-coverage` | Run tests and generate coverage report |
+| `make generate` | Run `go generate` for dynamic source files |
+| `make protobuf` | Regenerate protobuf stubs |
+| `make golangci-lint` | Run golangci-lint for all platforms |
+| `make list-integration-tests` | List all integration test targets |
+
+## Troubleshooting
+
+### Build fails with missing dependencies
+
+Ensure dependencies are up to date:
+
+```bash
+go mod download
+go mod tidy
+```
+
+### Version shows as "dirty"
+
+This happens when you have uncommitted changes. The build system appends `-dirty` to indicate the working tree has modifications:
+
+```bash
+git status
+```
+
+### Parallel build issues
+
+The Makefile disables parallelism (`.NOTPARALLEL`) because some build commands create temporary files that collide under parallel conditions. Don't use `make -j`.

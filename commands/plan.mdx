@@ -1,0 +1,445 @@
+---
+title: 'ghoten plan'
+description: 'Generate and review infrastructure execution plans with ORAS-backed state'
+---
+
+## Synopsis
+
+Generate an execution plan showing what actions Ghoten will take to reach the desired state defined in your configuration.
+
+```bash
+ghoten plan [options]
+```
+
+## Description
+
+The `plan` command creates an execution plan by:
+
+1. Reading the current state from the ORAS backend
+2. Comparing it to the desired state in your configuration
+3. Determining the required changes (create, update, destroy)
+4. Displaying the plan for review
+
+**Plan does not modify infrastructure.** It's a safe, read-only operation that shows what `apply` would do.
+
+<Note>
+Plans are automatically saved when using the `-out` flag, enabling a two-step workflow: review with `plan`, execute with `apply`.
+</Note>
+
+## Basic usage
+
+### Generate a plan
+
+```bash
+ghoten plan
+```
+
+**Example output:**
+
+```
+Acquiring state lock. This may take a few moments...
+
+OpenTofu will perform the following actions:
+
+  # aws_instance.web will be created
+  + resource "aws_instance" "web" {
+      + ami                          = "ami-0c55b159cbfafe1f0"
+      + instance_type                = "t3.micro"
+      + tags                         = {
+          + "Name" = "web-server"
+        }
+      # (29 unchanged attributes hidden)
+    }
+
+Plan: 1 to add, 0 to change, 0 to destroy.
+```
+
+### Plan with state locking
+
+By default, `plan` acquires a state lock from the ORAS backend:
+
+**Lock artifact created:**
+- Tag: `locked-default`
+- Duration: Held for the duration of the plan operation
+- Auto-release: Released when plan completes
+
+<Warning>
+If a previous operation crashed, the lock may still be held. Set `lock_ttl` in your backend config to enable automatic lock expiration.
+</Warning>
+
+## Common options
+
+### -out=PATH
+
+Save the plan to a file for later execution:
+
+```bash
+ghoten plan -out=tfplan
+```
+
+**Then apply the saved plan:**
+
+```bash
+ghoten apply tfplan
+```
+
+<Tip>
+Using `-out` ensures the exact plan you reviewed is applied, preventing drift between planning and execution.
+</Tip>
+
+### -var and -var-file
+
+Provide variable values:
+
+```bash
+# Single variable
+ghoten plan -var="region=us-west-2"
+
+# Multiple variables
+ghoten plan -var="region=us-west-2" -var="instance_type=t3.large"
+
+# From a file
+ghoten plan -var-file="production.tfvars"
+```
+
+### -target=RESOURCE
+
+Focus planning on specific resources:
+
+```bash
+ghoten plan -target=aws_instance.web
+```
+
+**Output:**
+
+```
+OpenTofu will perform the following actions:
+
+  # aws_instance.web will be updated in-place
+  ~ resource "aws_instance" "web" {
+      ~ instance_type = "t3.micro" -> "t3.medium"
+    }
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+
+Note: You didn't use the -out option to save this plan...
+```
+
+<Warning>
+`-target` should only be used in exceptional circumstances. It can lead to inconsistent infrastructure state.
+</Warning>
+
+### -refresh-only
+
+Update the state to match remote infrastructure without making changes:
+
+```bash
+ghoten plan -refresh-only
+```
+
+**Use case:** Detect drift between state and actual infrastructure.
+
+### -destroy
+
+Generate a plan to destroy all resources:
+
+```bash
+ghoten plan -destroy
+```
+
+**Output:**
+
+```
+OpenTofu will perform the following actions:
+
+  # aws_instance.web will be destroyed
+  - resource "aws_instance" "web" {
+      - ami           = "ami-0c55b159cbfafe1f0" -> null
+      - instance_type = "t3.micro" -> null
+      # (29 unchanged attributes hidden)
+    }
+
+Plan: 0 to add, 0 to change, 1 to destroy.
+```
+
+<Note>
+Prefer `ghoten destroy` over `ghoten plan -destroy` for clarity.
+</Note>
+
+### -detailed-exitcode
+
+Use exit code `2` when the plan contains changes:
+
+```bash
+ghoten plan -detailed-exitcode
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -eq 0 ]; then
+  echo "No changes"
+elif [ $EXIT_CODE -eq 2 ]; then
+  echo "Changes detected"
+else
+  echo "Error"
+fi
+```
+
+**Exit codes:**
+- `0` - Success, no changes
+- `1` - Error
+- `2` - Success, changes present
+
+<Tip>
+Use `-detailed-exitcode` in CI pipelines to conditionally trigger apply steps.
+</Tip>
+
+## ORAS backend-specific behavior
+
+### State artifact access
+
+During `plan`, Ghoten:
+
+1. **Reads current state** from `state-<workspace>` artifact
+2. **Acquires lock** by tagging `locked-<workspace>` artifact
+3. **Releases lock** after planning completes
+
+**Registry interaction:**
+
+```bash
+TF_LOG=DEBUG ghoten plan
+```
+
+**Debug output:**
+
+```
+[DEBUG] Fetching manifest for tag: state-default
+[DEBUG] State artifact digest: sha256:abc123...
+[DEBUG] Acquiring lock with tag: locked-default
+[DEBUG] Lock acquired successfully
+[DEBUG] Releasing lock: locked-default
+```
+
+### Versioning behavior
+
+`plan` does **not** create versioned state artifacts. Versions are only created during `apply` operations when `max_versions` is configured.
+
+### Compression detection
+
+Ghoten automatically detects compressed state layers:
+
+**Manifest media type:**
+- `application/vnd.terraform.statefile.v1+gzip` → Decompresses automatically
+- `application/vnd.terraform.statefile.v1` → Reads as-is
+
+## All options
+
+| Option | Description |
+|--------|-------------|
+| `-compact-warnings` | Compact warnings if no errors |
+| `-destroy` | Generate a destroy plan |
+| `-detailed-exitcode` | Return exit code 2 if plan contains changes |
+| `-generate-config-out=PATH` | Generate configuration for imported resources |
+| `-input=false` | Disable interactive prompts |
+| `-lock=false` | Disable state locking |
+| `-lock-timeout=DURATION` | Override lock timeout (default: `0s`) |
+| `-no-color` | Disable colorized output |
+| `-out=PATH` | Save plan to file |
+| `-parallelism=N` | Limit concurrent resource operations (default: `10`) |
+| `-refresh=false` | Skip refreshing state before planning |
+| `-refresh-only` | Only update state, don't plan changes |
+| `-replace=ADDRESS` | Force replacement of a specific resource |
+| `-state=PATH` | Path to read state (deprecated, use remote state) |
+| `-target=ADDRESS` | Limit planning to specific resources |
+| `-var=NAME=VALUE` | Set a variable value |
+| `-var-file=PATH` | Load variable values from file |
+
+## Exit codes
+
+| Exit Code | Meaning |
+|-----------|----------|
+| `0` | Success, no changes (or changes without `-detailed-exitcode`) |
+| `1` | Error (invalid configuration, authentication failed, etc.) |
+| `2` | Success with changes (only with `-detailed-exitcode`) |
+
+## Examples
+
+### Example 1: Review changes before applying
+
+```bash
+ghoten plan
+```
+
+**Output review:**
+
+```
+Plan: 3 to add, 1 to change, 0 to destroy.
+```
+
+**If acceptable:**
+
+```bash
+ghoten apply
+```
+
+### Example 2: Save and apply a plan
+
+```bash
+# Generate and save plan
+ghoten plan -out=production.tfplan
+
+# Review the saved plan
+ghoten show production.tfplan
+
+# Apply the exact plan
+ghoten apply production.tfplan
+```
+
+<Info>
+Saved plans include variable values and state snapshots, ensuring consistent execution.
+</Info>
+
+### Example 3: CI pipeline with detailed exit code
+
+```bash
+#!/bin/bash
+set -e
+
+ghoten init -input=false
+ghoten plan -detailed-exitcode -out=tfplan
+
+if [ $? -eq 2 ]; then
+  echo "Changes detected, applying..."
+  ghoten apply -input=false tfplan
+else
+  echo "No changes needed"
+fi
+```
+
+### Example 4: Plan for a specific workspace
+
+```bash
+ghoten workspace select production
+ghoten plan
+```
+
+**ORAS artifact accessed:**
+- Tag: `state-production`
+- Lock: `locked-production`
+
+### Example 5: Detect drift with refresh-only
+
+```bash
+ghoten plan -refresh-only
+```
+
+**Output if drift detected:**
+
+```
+Note: Objects have changed outside of Ghoten
+
+OpenTofu detected the following changes made outside of Ghoten:
+
+  # aws_instance.web has changed
+  ~ resource "aws_instance" "web" {
+      ~ tags = {
+          + "Environment" = "production"
+        }
+    }
+
+This is a refresh-only plan. No changes will be applied.
+```
+
+### Example 6: Plan with variable overrides
+
+```bash
+ghoten plan \
+  -var="environment=production" \
+  -var="instance_count=5" \
+  -var-file="common.tfvars"
+```
+
+## Troubleshooting
+
+### Error: Failed to acquire state lock
+
+**Problem:**
+
+```
+Error: Error acquiring the state lock
+
+Lock ID: abc123-def456
+Path: locked-default
+Operation: plan
+```
+
+**Solution 1:** Wait for the other operation to complete.
+
+**Solution 2:** If the lock is stale (from a crashed job), configure auto-expiration:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/infra-state"
+    lock_ttl   = 300  # Auto-expire after 5 minutes
+  }
+}
+```
+
+**Solution 3:** Manually unlock (use with caution):
+
+```bash
+ghoten force-unlock abc123-def456
+```
+
+### Error: Failed to load state
+
+**Problem:**
+
+```
+Error: Failed to load state
+
+State artifact not found: state-default
+```
+
+**Solution:**
+
+Run `ghoten init` to initialize the backend:
+
+```bash
+ghoten init
+ghoten plan
+```
+
+### Plan shows unexpected changes
+
+**Problem:** Plan shows changes you didn't make.
+
+**Solution:** Check for drift:
+
+```bash
+# Refresh state to match reality
+ghoten plan -refresh-only
+ghoten apply -refresh-only
+
+# Then re-plan
+ghoten plan
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Apply Command" icon="check" href="/commands/apply">
+    Execute the planned changes to infrastructure
+  </Card>
+  
+  <Card title="Destroy Command" icon="trash" href="/commands/destroy">
+    Tear down infrastructure resources
+  </Card>
+  
+  <Card title="State Locking" icon="lock" href="/concepts/locking-versioning">
+    Learn about state locking in the ORAS backend
+  </Card>
+  
+  <Card title="GitHub Action" icon="github" href="/usage/github-action">
+    Run plan operations in CI/CD pipelines
+  </Card>
+</CardGroup>

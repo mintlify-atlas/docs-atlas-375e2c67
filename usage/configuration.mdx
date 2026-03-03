@@ -1,0 +1,124 @@
+---
+title: Configuration
+description: Configure the ORAS backend for OCI-based state storage
+---
+
+The ORAS backend stores OpenTofu state directly as OCI artifacts in container registries like GitHub Container Registry (GHCR), without requiring additional backend services.
+
+## Minimal Configuration
+
+The simplest valid ORAS backend configuration requires only the `repository` parameter:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/acme/infra-state"
+  }
+}
+```
+
+This is sufficient to get started. All other parameters are optional tuning options.
+
+## Production Baseline
+
+For production environments, use this recommended baseline configuration:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository   = "ghcr.io/myorg/infra-state"
+    compression  = "gzip"
+    lock_ttl     = 300
+    max_versions = 10
+  }
+}
+```
+
+<Info>
+  - `compression = "gzip"` reduces state file size for faster transfers
+  - `lock_ttl = 300` automatically cleans up stale locks after 5 minutes
+  - `max_versions = 10` retains history without unbounded growth
+</Info>
+
+## Production with Encryption
+
+For enhanced security, enable state encryption using OpenTofu's encryption features:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository   = "ghcr.io/myorg/infra-state"
+    compression  = "gzip"
+    lock_ttl     = 300
+    max_versions = 10
+  }
+
+  encryption {
+    key_provider "pbkdf2" "main" {
+      passphrase = var.state_passphrase
+    }
+    method "aes_gcm" "main" {
+      key_provider = key_provider.pbkdf2.main
+    }
+    state { method = method.aes_gcm.main }
+    plan  { method = method.aes_gcm.main }
+  }
+}
+```
+
+<Warning>
+  For real production systems, prefer a KMS-backed key provider over PBKDF2 passphrases for better security and key management.
+</Warning>
+
+## Configuration Reference
+
+All available ORAS backend parameters:
+
+| Parameter | Type | Default | Environment Variable | Description |
+|-----------|------|---------|---------------------|-------------|
+| `repository` | string | `""` (required) | `TF_BACKEND_ORAS_REPOSITORY` | OCI repository in format `<registry>/<repo>` |
+| `compression` | string | `"none"` | — | Compression method: `none` or `gzip` |
+| `insecure` | bool | `false` | — | Skip TLS verification (not recommended) |
+| `ca_file` | string | `""` | — | Path to PEM CA bundle for custom certificates |
+| `retry_max` | int | `2` | `TF_BACKEND_ORAS_RETRY_MAX` | Number of retries for transient errors |
+| `retry_wait_min` | int | `1` | `TF_BACKEND_ORAS_RETRY_WAIT_MIN` | Minimum backoff wait time (seconds) |
+| `retry_wait_max` | int | `30` | `TF_BACKEND_ORAS_RETRY_WAIT_MAX` | Maximum backoff wait time (seconds) |
+| `lock_ttl` | int | `0` | `TF_BACKEND_ORAS_LOCK_TTL` | Lock TTL in seconds; `> 0` enables stale-lock cleanup |
+| `rate_limit` | int | `0` | `TF_BACKEND_ORAS_RATE_LIMIT` | Maximum requests per second; `0` disables |
+| `rate_limit_burst` | int | `0` | `TF_BACKEND_ORAS_RATE_LIMIT_BURST` | Token bucket burst size |
+| `max_versions` | int | `0` | — | Number of historical state versions to retain; `0` disables |
+
+## State Representation
+
+Ghoten uses OCI tags to manage state within your registry:
+
+| Purpose | Tag Pattern |
+|---------|-------------|
+| Current state | `state-<workspace>` |
+| Active lock | `locked-<workspace>` |
+| Historical version | `state-<workspace>-v<N>` |
+
+<Note>
+  When a workspace name is not a valid OCI tag, Ghoten hashes it to `ws-<sha256>` and stores the original name in OCI annotations.
+</Note>
+
+## Environment Variables
+
+You can override backend configuration using environment variables, which is useful in CI/CD pipelines:
+
+```bash
+export TF_BACKEND_ORAS_REPOSITORY="ghcr.io/myorg/infra-state"
+export TF_BACKEND_ORAS_RETRY_MAX=5
+export TF_BACKEND_ORAS_LOCK_TTL=300
+./ghoten init
+```
+
+## Debugging
+
+Enable debug logging to troubleshoot backend issues:
+
+```bash
+TF_LOG=DEBUG ./ghoten plan
+```
+
+This provides detailed information about ORAS operations, authentication, and registry interactions.

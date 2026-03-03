@@ -1,0 +1,446 @@
+---
+title: Backend Parameters
+description: Complete reference for all ORAS backend configuration parameters
+---
+
+This page documents all configuration parameters available for the ORAS backend, including their types, default values, and detailed descriptions.
+
+## Repository Configuration
+
+<ParamField path="repository" type="string" required>
+  OCI repository in the form `<registry>/<repository>`, without tag or digest.
+  
+  **Examples:**
+  - `ghcr.io/myorg/terraform-state`
+  - `registry.example.com/infra/state`
+  - `docker.io/myuser/tfstate`
+  
+  **Environment Variable:** `TF_BACKEND_ORAS_REPOSITORY`
+  
+  <Warning>
+    This parameter is required. The backend will fail to initialize without it.
+  </Warning>
+  
+  **Validation:**
+  - Must be a valid OCI repository reference
+  - Must NOT include a tag (e.g., `:latest`) or digest
+  - Format: `<registry-host>/<repository-path>`
+  
+  **Example:**
+  ```hcl
+  terraform {
+    backend "oras" {
+      repository = "ghcr.io/acme/infra-state"
+    }
+  }
+  ```
+</ParamField>
+
+## TLS Configuration
+
+<ParamField path="insecure" type="bool" default="false">
+  Skip TLS certificate verification when communicating with the OCI registry.
+  
+  <Warning>
+    Only use this for development and testing. Never enable in production environments.
+  </Warning>
+  
+  When set to `true`, the backend will:
+  - Skip certificate validation
+  - Accept self-signed certificates
+  - Not verify the registry hostname
+  
+  **Example:**
+  ```hcl
+  terraform {
+    backend "oras" {
+      repository = "registry.local/state"
+      insecure   = true  # Development only!
+    }
+  }
+  ```
+</ParamField>
+
+<ParamField path="ca_file" type="string" default="">
+  Path to a PEM-encoded CA certificate bundle to trust when communicating with the OCI registry.
+  
+  Use this parameter when:
+  - Your registry uses certificates signed by an internal CA
+  - You need to trust additional certificate authorities
+  - Working with self-hosted registries with custom certificates
+  
+  **File Format:** PEM-encoded X.509 certificates
+  
+  **Example:**
+  ```hcl
+  terraform {
+    backend "oras" {
+      repository = "registry.internal/state"
+      ca_file    = "/etc/ssl/certs/internal-ca.pem"
+    }
+  }
+  ```
+  
+  <Tip>
+    The file can contain multiple CA certificates concatenated together.
+  </Tip>
+</ParamField>
+
+## Retry Configuration
+
+The backend implements exponential backoff with configurable retry parameters for handling transient registry errors.
+
+<ParamField path="retry_max" type="int" default="2">
+  The number of retries for transient registry requests.
+  
+  **Environment Variable:** `TF_BACKEND_ORAS_RETRY_MAX`
+  
+  **Retry Logic:**
+  - `retry_max = 0`: 1 total attempt (no retries)
+  - `retry_max = 2`: Up to 3 total attempts (2 retries after initial failure)
+  - `retry_max = 5`: Up to 6 total attempts (5 retries after initial failure)
+  
+  **Retried Errors:**
+  - HTTP 429 (Too Many Requests)
+  - HTTP 408 (Request Timeout)
+  - HTTP 502 (Bad Gateway)
+  - HTTP 503 (Service Unavailable)
+  - HTTP 504 (Gateway Timeout)
+  - Network timeouts and temporary connection failures
+  
+  **Example:**
+  ```hcl
+  terraform {
+    backend "oras" {
+      repository = "ghcr.io/myorg/state"
+      retry_max  = 3  # Up to 4 total attempts
+    }
+  }
+  ```
+</ParamField>
+
+<ParamField path="retry_wait_min" type="int" default="1">
+  The minimum time in seconds to wait between transient registry request attempts.
+  
+  **Environment Variable:** `TF_BACKEND_ORAS_RETRY_WAIT_MIN`
+  
+  This sets the initial backoff duration. Subsequent retries use exponential backoff with a 2x multiplier:
+  - First retry: waits `retry_wait_min` seconds
+  - Second retry: waits `retry_wait_min * 2` seconds
+  - Third retry: waits `retry_wait_min * 4` seconds
+  - And so on, capped at `retry_wait_max`
+  
+  **Example:**
+  ```hcl
+  terraform {
+    backend "oras" {
+      repository     = "ghcr.io/myorg/state"
+      retry_max      = 3
+      retry_wait_min = 2  # Start with 2s, then 4s, then 8s
+    }
+  }
+  ```
+</ParamField>
+
+<ParamField path="retry_wait_max" type="int" default="30">
+  The maximum time in seconds to wait between transient registry request attempts.
+  
+  **Environment Variable:** `TF_BACKEND_ORAS_RETRY_WAIT_MAX`
+  
+  This caps the exponential backoff to prevent excessively long wait times.
+  
+  **Validation:**
+  - If `retry_wait_max < retry_wait_min`, it will be set to `retry_wait_min`
+  - Must be non-negative
+  
+  **Example:**
+  ```hcl
+  terraform {
+    backend "oras" {
+      repository     = "ghcr.io/myorg/state"
+      retry_max      = 5
+      retry_wait_min = 1
+      retry_wait_max = 30  # Never wait more than 30 seconds
+    }
+  }
+  ```
+  
+  <Info>
+    With `retry_wait_min=1` and a 2x multiplier, backoff times are: 1s, 2s, 4s, 8s, 16s, 30s (capped).
+  </Info>
+</ParamField>
+
+## Compression
+
+<ParamField path="compression" type="string" default="none">
+  State compression algorithm to use when storing state files.
+  
+  **Supported Values:**
+  - `none` - No compression (faster, larger size)
+  - `gzip` - GZIP compression (slower, smaller size)
+  
+  **When to Use:**
+  - **`none`**: Small state files (< 1MB), prioritize speed
+  - **`gzip`**: Large state files (> 1MB), reduce storage and transfer costs
+  
+  **Media Types:**
+  - Uncompressed: `application/vnd.terraform.statefile.v1`
+  - Compressed: `application/vnd.terraform.statefile.v1+gzip`
+  
+  **Example:**
+  ```hcl
+  terraform {
+    backend "oras" {
+      repository  = "ghcr.io/myorg/state"
+      compression = "gzip"
+    }
+  }
+  ```
+  
+  <Note>
+    Compression is applied before encryption if state encryption is enabled.
+  </Note>
+</ParamField>
+
+## Locking
+
+<ParamField path="lock_ttl" type="int" default="0">
+  Lock TTL (time-to-live) in seconds. When greater than 0, stale locks older than this threshold are automatically cleared during lock acquisition.
+  
+  **Environment Variable:** `TF_BACKEND_ORAS_LOCK_TTL`
+  
+  **Behavior:**
+  - `lock_ttl = 0` (default): Locks remain until explicitly released. Manual intervention required for stuck locks.
+  - `lock_ttl > 0`: Enables automatic stale lock cleanup. Locks older than the TTL are automatically cleared when another process attempts to acquire the lock.
+  
+  **Use Cases:**
+  - **CI/CD environments**: Set to slightly longer than your longest expected operation (e.g., 300-600 seconds)
+  - **Development**: Lower values (e.g., 120 seconds) for faster recovery from crashed processes
+  - **Production with long operations**: Higher values (e.g., 900 seconds) to prevent premature lock cleanup
+  
+  **Example:**
+  ```hcl
+  terraform {
+    backend "oras" {
+      repository = "ghcr.io/myorg/state"
+      lock_ttl   = 300  # 5 minutes
+    }
+  }
+  ```
+  
+  <Warning>
+    Set the TTL longer than your longest expected Terraform operation to avoid premature lock cleanup during legitimate long-running operations.
+  </Warning>
+</ParamField>
+
+## Rate Limiting
+
+<ParamField path="rate_limit" type="int" default="0">
+  Maximum registry requests per second. Uses a token bucket algorithm for rate limiting.
+  
+  **Environment Variable:** `TF_BACKEND_ORAS_RATE_LIMIT`
+  
+  **Behavior:**
+  - `rate_limit = 0` (default): No rate limiting
+  - `rate_limit > 0`: Limits requests to the specified rate per second
+  
+  **Use Cases:**
+  - Protect registry from excessive API calls
+  - Comply with registry rate limits (e.g., GitHub API limits)
+  - Control costs for registries with usage-based pricing
+  
+  **Example:**
+  ```hcl
+  terraform {
+    backend "oras" {
+      repository = "ghcr.io/myorg/state"
+      rate_limit = 10  # Max 10 requests per second
+    }
+  }
+  ```
+  
+  <Tip>
+    Check your registry's documented rate limits and set this value accordingly.
+  </Tip>
+</ParamField>
+
+<ParamField path="rate_limit_burst" type="int" default="0">
+  Maximum burst size for registry requests when rate limiting is enabled.
+  
+  **Environment Variable:** `TF_BACKEND_ORAS_RATE_LIMIT_BURST`
+  
+  **Behavior:**
+  - `rate_limit_burst = 0`: Defaults to 1 (minimum burst)
+  - `rate_limit_burst > 0`: Allows bursts up to the specified size
+  
+  **Use Cases:**
+  - Allow short bursts of activity while maintaining average rate limits
+  - Accommodate initialization operations that require multiple rapid requests
+  - Balance responsiveness with rate limit compliance
+  
+  **Example:**
+  ```hcl
+  terraform {
+    backend "oras" {
+      repository       = "ghcr.io/myorg/state"
+      rate_limit       = 5   # 5 requests/second average
+      rate_limit_burst = 15  # Allow bursts up to 15 requests
+    }
+  }
+  ```
+  
+  <Info>
+    The burst value represents the token bucket size. A higher burst allows more requests in a short period, but the average rate is still limited by `rate_limit`.
+  </Info>
+</ParamField>
+
+## State Versioning
+
+<ParamField path="max_versions" type="int" default="0">
+  Maximum number of historical state versions to retain. Controls automatic state versioning and pruning.
+  
+  **Behavior:**
+  - `max_versions = 0` (default): Versioning disabled. No historical versions are kept.
+  - `max_versions > 0`: Versioning enabled. Retains up to the specified number of historical versions.
+  
+  **How It Works:**
+  - Each state update creates a new versioned tag: `state-<workspace>-v<N>`
+  - The current state is always at `state-<workspace>`
+  - Versions are numbered sequentially starting from 1
+  - When the limit is exceeded, the oldest versions are automatically pruned
+  
+  **Use Cases:**
+  - **Audit trail**: Keep historical states for compliance (e.g., `max_versions = 30`)
+  - **Rollback capability**: Maintain recent versions for recovery (e.g., `max_versions = 10`)
+  - **Storage optimization**: Disable versioning to minimize storage (e.g., `max_versions = 0`)
+  
+  **Example:**
+  ```hcl
+  terraform {
+    backend "oras" {
+      repository   = "ghcr.io/myorg/state"
+      max_versions = 10  # Keep last 10 versions
+    }
+  }
+  ```
+  
+  **Version Tags:**
+  With `max_versions = 3` and workspace `production`, you'll see:
+  - `state-production` (current state)
+  - `state-production-v1` (oldest)
+  - `state-production-v2`
+  - `state-production-v3` (newest historical)
+  
+  <Note>
+    Versioning is independent of your registry's image retention policies. Set `max_versions` based on your state management needs, not registry limitations.
+  </Note>
+</ParamField>
+
+## Configuration Examples
+
+### Minimal Configuration
+
+Only the repository is required:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/state"
+  }
+}
+```
+
+### Development Configuration
+
+For local development with relaxed settings:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "localhost:5000/state"
+    insecure   = true
+    lock_ttl   = 120  # 2 minutes
+  }
+}
+```
+
+### Production Configuration
+
+Recommended settings for production:
+
+```hcl
+terraform {
+  backend "oras" {
+    # Required
+    repository = "ghcr.io/myorg/terraform-state"
+    
+    # Performance
+    compression = "gzip"
+    
+    # Reliability
+    retry_max      = 3
+    retry_wait_min = 1
+    retry_wait_max = 30
+    
+    # State management
+    lock_ttl     = 300  # 5 minutes
+    max_versions = 10
+    
+    # Rate limiting
+    rate_limit       = 10
+    rate_limit_burst = 20
+  }
+}
+```
+
+### High-Availability Configuration
+
+Optimized for reliability and performance:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "registry.example.com/terraform/state"
+    
+    # Custom CA for internal registry
+    ca_file = "/etc/ssl/certs/company-ca.pem"
+    
+    # Aggressive retry for HA setup
+    retry_max      = 5
+    retry_wait_min = 1
+    retry_wait_max = 60
+    
+    # Compression for large states
+    compression = "gzip"
+    
+    # Versioning for compliance
+    max_versions = 30
+    
+    # Conservative lock TTL
+    lock_ttl = 600  # 10 minutes
+  }
+}
+```
+
+## Parameter Validation
+
+The backend validates parameters during initialization:
+
+- `repository` must be a valid OCI reference without tag/digest
+- `lock_ttl` must be non-negative
+- `rate_limit` must be non-negative
+- `rate_limit_burst` must be non-negative
+- `max_versions` must be non-negative (negative values treated as 0)
+- `compression` must be either "none" or "gzip"
+- `retry_wait_max` must be >= `retry_wait_min`
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="Backend Configuration" icon="gear" href="/reference/backend-config">
+    Complete guide to configuring the ORAS backend
+  </Card>
+  <Card title="Environment Variables" icon="terminal" href="/reference/environment-variables">
+    Environment variable reference for all parameters
+  </Card>
+</CardGroup>

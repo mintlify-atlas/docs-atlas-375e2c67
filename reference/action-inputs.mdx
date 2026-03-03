@@ -1,0 +1,133 @@
+---
+title: Action Inputs
+description: Complete reference for all Ghoten GitHub Action inputs
+---
+
+The Ghoten GitHub Action accepts the following inputs. Most have sensible defaults and only need to be specified when you want to override the default behavior.
+
+## Command Configuration
+
+<ParamField path="command" type="string" default="plan">
+  Command to run: `plan`, `apply`, `destroy`, `fmt`, or `validate`
+  
+  Use `plan` for PR reviews, `apply` for deploying changes, `destroy` for teardown, `fmt` for formatting checks, and `validate` for configuration validation.
+</ParamField>
+
+<ParamField path="working-directory" type="string" default=".">
+  Working directory containing HCL configuration files
+  
+  Useful for monorepos or when your Terraform/OpenTofu files are in a nested folder.
+</ParamField>
+
+<ParamField path="workspace" type="string" default="default">
+  Terraform workspace name
+  
+  Use workspaces to manage multiple environments (dev, staging, prod) with the same configuration.
+</ParamField>
+
+## Variables and Configuration
+
+<ParamField path="var-file" type="string" default="">
+  Path to a `.tfvars` variable file
+  
+  Provide environment-specific variable files for different deployment scenarios.
+</ParamField>
+
+<ParamField path="variables" type="string" default="">
+  Newline-separated `key=value` variable pairs
+  
+  Inject runtime variables directly in your workflow. Example:
+  ```yaml
+  variables: |
+    environment=production
+    region=us-east-1
+  ```
+</ParamField>
+
+<ParamField path="args" type="string" default="">
+  Additional CLI arguments appended to the command
+  
+  Pass extra flags to the underlying Ghoten command for advanced use cases.
+</ParamField>
+
+## Backend Configuration
+
+<ParamField path="backend-repository" type="string" default="">
+  ORAS backend OCI repository
+  
+  Defaults to `ghcr.io/<owner>/tf-state.<repo>` when not set. Override this for shared state repositories or custom naming conventions.
+</ParamField>
+
+<ParamField path="backend-config" type="string" default="">
+  Newline-separated `backend-config` key=value pairs
+  
+  Provide additional backend configuration options.
+</ParamField>
+
+<ParamField path="compression" type="string" default="gzip">
+  ORAS backend state compression: `none` or `gzip`
+  
+  Use `gzip` to reduce storage size or `none` for faster read/write at the cost of storage.
+</ParamField>
+
+<ParamField path="lock-ttl" type="number" default="300">
+  ORAS backend lock TTL in seconds (0 to disable)
+  
+  Prevents concurrent state modifications. Set to 0 to disable locking (not recommended for production).
+</ParamField>
+
+<ParamField path="max-versions" type="number" default="10">
+  ORAS backend state versions to retain (0 to disable)
+  
+  Controls state version history. Set to 0 to keep all versions indefinitely.
+</ParamField>
+
+## Initialization
+
+<ParamField path="auto-init" type="boolean" default="true">
+  Automatically run `ghoten init` before the command
+  
+  Disable only if you're manually managing initialization in a previous step.
+</ParamField>
+
+<ParamField path="init-args" type="string" default="">
+  Additional arguments for `ghoten init`
+  
+  Pass extra flags to the init command for advanced configuration.
+</ParamField>
+
+## GitHub Integration
+
+<ParamField path="github-token" type="string" default="">
+  GitHub token for GHCR authentication and PR comments
+  
+  Defaults to `github.token` when not set. Override with a custom token if you need different permissions.
+</ParamField>
+
+<ParamField path="comment-on-pr" type="boolean" default="true">
+  Post/update command output as a PR comment
+  
+  Automatically adds plan/apply results as comments on pull requests. Disable to reduce PR noise in large repositories.
+</ParamField>
+
+<ParamField path="add-summary" type="boolean" default="true">
+  Generate a GitHub Job Summary
+  
+  Creates a formatted summary of the command execution in the Actions run page. Disable if you're providing custom summaries.
+</ParamField>
+
+## Formatting
+
+<ParamField path="fmt-check" type="boolean" default="false">
+  Use `-check` mode for the `fmt` command (report only, do not rewrite)
+  
+  When enabled, the fmt command will only check formatting without modifying files. Useful for CI validation.
+</ParamField>
+
+## Version
+
+<ParamField path="version" type="string" default="">
+  Ghoten version to install
+  
+  Defaults to the version matching the action release. Override to pin a specific Ghoten version.
+</ParamField>

@@ -1,0 +1,291 @@
+---
+title: 'State Management'
+description: 'How Ghoten stores and manages OpenTofu state in OCI registries'
+---
+
+## State storage model
+
+The ORAS backend stores OpenTofu state as OCI artifacts in container registries. Each workspace's state is packaged as an OCI image manifest with metadata annotations and layers containing the state data.
+
+### Tag naming scheme
+
+State artifacts use a consistent tag naming pattern to organize workspaces, locks, and versions:
+
+| Purpose | Tag Pattern | Example |
+|---------|-------------|----------|
+| Current state | `state-<workspace>` | `state-default` |
+| Active lock | `locked-<workspace>` | `locked-production` |
+| Unlocked state | `unlocked-<workspace>` | `unlocked-staging` |
+| Historical version | `state-<workspace>-v<N>` | `state-default-v5` |
+
+<Info>
+When a workspace name contains characters that are not valid in OCI tags, Ghoten creates a hash-based tag like `ws-<sha256>` and stores the original workspace name in the manifest's `org.terraform.workspace` annotation.
+</Info>
+
+### Workspace tag transformation
+
+The backend validates workspace names against OCI tag requirements:
+
+```go
+// Valid workspace names are used directly
+workspace: "production" → tag: "state-production"
+
+// Invalid names are hashed
+workspace: "prod/us-east-1" → tag: "state-ws-abc123def456"
+```
+
+The `workspaceTagFor` function ensures all workspace names are represented as valid OCI tags while preserving the original name in annotations.
+
+## State artifact structure
+
+Each state artifact consists of:
+
+### Manifest annotations
+
+Manifests include metadata annotations for tracking and identification:
+
+```json
+{
+  "annotations": {
+    "org.terraform.workspace": "production",
+    "org.terraform.state.updated_at": "2026-03-03T14:30:00Z",
+    "org.terraform.state.version": "42"
+  }
+}
+```
+
+| Annotation | Purpose |
+|------------|----------|
+| `org.terraform.workspace` | Original workspace name (for hashed tags) |
+| `org.terraform.state.updated_at` | Timestamp of last state update (RFC3339 format) |
+| `org.terraform.state.version` | Version number for versioning-enabled backends |
+
+### Layers
+
+State data is stored in a single layer:
+
+```json
+{
+  "layers": [
+    {
+      "mediaType": "application/vnd.terraform.statefile.v1+gzip",
+      "digest": "sha256:abc123...",
+      "size": 4096
+    }
+  ]
+}
+```
+
+The media type indicates compression:
+- `application/vnd.terraform.statefile.v1` - Uncompressed state
+- `application/vnd.terraform.statefile.v1+gzip` - Gzip-compressed state
+
+## Compression
+
+The backend supports optional compression to reduce storage costs and transfer time:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository  = "ghcr.io/myorg/infra-state"
+    compression = "gzip"  # or "none"
+  }
+}
+```
+
+<Tip>
+Enable gzip compression for large state files to reduce registry storage costs and improve transfer speeds. The performance overhead during state operations is minimal.
+</Tip>
+
+### Compression implementation
+
+When compression is enabled:
+
+1. State data is compressed using `gzip.BestSpeed` before push
+2. Media type is set to `application/vnd.terraform.statefile.v1+gzip`
+3. On read, the backend automatically detects and decompresses based on media type
+
+## State versioning
+
+Versioning preserves historical state snapshots for rollback and audit purposes.
+
+### Enabling versioning
+
+Set `max_versions` to enable versioning with automatic retention:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository   = "ghcr.io/myorg/infra-state"
+    max_versions = 10  # Keep last 10 versions
+  }
+}
+```
+
+<Note>
+Setting `max_versions = 0` (default) disables versioning entirely. No historical versions are created or retained.
+</Note>
+
+### How versioning works
+
+1. **Version tracking**: Each state update increments the version number stored in the manifest annotation
+2. **Version tagging**: The new state is tagged with both the current state tag and a versioned tag
+3. **Async retention**: After tagging, a background goroutine enforces the retention policy
+
+```
+Put operation:
+├─ Read current version annotation (e.g., v41)
+├─ Create manifest with version=42
+├─ Tag as state-default (current)
+├─ Tag as state-default-v42 (versioned)
+└─ Async: Delete oldest versions beyond max_versions
+```
+
+### Version annotation optimization
+
+The backend uses manifest annotations to track versions efficiently:
+
+```go
+// Fast path: Read version from current state manifest
+currentVersion := manifest.Annotations["org.terraform.state.version"]
+nextVersion := currentVersion + 1
+
+// Slow path: Only if annotation is missing (legacy manifests)
+listAllVersionTags() // Expensive operation
+```
+
+This optimization avoids listing all tags on every `Put` operation, reducing latency significantly.
+
+## Retention enforcement
+
+When `max_versions` is set, the backend enforces retention limits:
+
+### Retention strategy
+
+1. **Identify versions to delete**: Versions are sorted numerically, and the oldest are marked for deletion
+2. **Group by digest**: Versions pointing to the same manifest are grouped
+3. **Detach keep tags**: Tags to retain are re-pointed to new manifests
+4. **Delete manifests**: Old manifests are deleted, or fallback to GitHub API for GHCR
+
+### Async retention with semaphore
+
+Retention cleanup runs asynchronously to avoid blocking state write operations:
+
+```go
+// Put returns immediately after tagging
+Tag(manifestDesc, "state-default")
+Tag(manifestDesc, "state-default-v42")
+
+// Background cleanup (30s timeout)
+go func() {
+  listExistingVersions()
+  enforceVersionRetention()
+}()
+```
+
+A semaphore limits concurrent retention goroutines to 3, preventing resource exhaustion on rapid state updates.
+
+<Warning>
+Retention enforcement happens asynchronously. There may be a brief period where version count exceeds `max_versions` before cleanup completes.
+</Warning>
+
+## State operations
+
+### Reading state
+
+The `Get` operation:
+
+1. Resolves the current state tag (`state-<workspace>`)
+2. Fetches the manifest to read layer descriptors
+3. Fetches the layer blob
+4. Decompresses if needed (based on media type)
+5. Returns state data with MD5 checksum
+
+### Writing state
+
+The `Put` operation:
+
+1. Compresses state data if `compression = "gzip"`
+2. Pushes the state layer blob
+3. Reads current version (if versioning enabled)
+4. Creates manifest with incremented version annotation
+5. Tags manifest as current state
+6. Tags manifest as versioned state (if enabled)
+7. Spawns async retention enforcement
+
+### Deleting state
+
+The `Delete` operation:
+
+1. Resolves the current state tag
+2. Deletes the manifest by digest
+3. Returns success even if the state doesn't exist (idempotent)
+
+## Workspace operations
+
+### Listing workspaces
+
+The backend lists all workspaces by:
+
+1. Fetching all tags from the repository
+2. Filtering for tags matching `state-*` pattern
+3. Excluding versioned tags (`state-*-v<N>`)
+4. Resolving hashed workspace names from manifest annotations
+5. Always including the default workspace in the result
+
+### Deleting workspaces
+
+Deleting a workspace removes:
+
+- Main state manifest (`state-<workspace>`)
+- All versioned state manifests (`state-<workspace>-v*`)
+- Lock manifest (`locked-<workspace>`)
+- Unlocked fallback manifest (`unlocked-<workspace>`)
+
+<Warning>
+You cannot delete the default workspace. Attempting to delete it returns an error.
+</Warning>
+
+## Error handling
+
+### Retry behavior
+
+The backend automatically retries transient errors:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository      = "ghcr.io/myorg/infra-state"
+    retry_max       = 2      # 2 retries = 3 total attempts
+    retry_wait_min  = 1      # Start with 1s backoff
+    retry_wait_max  = 30     # Cap at 30s backoff
+  }
+}
+```
+
+Transient errors include:
+- HTTP 429 (Too Many Requests)
+- HTTP 503 (Service Unavailable)
+- Network timeouts
+- Connection resets
+- DNS resolution failures
+
+### Non-retryable errors
+
+These errors fail immediately without retry:
+- HTTP 401 (Unauthorized)
+- HTTP 403 (Forbidden)
+- HTTP 404 (Not Found)
+- Invalid manifest format
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="ORAS Backend" icon="box" href="/concepts/oras-backend">
+    Learn about the ORAS backend architecture
+  </Card>
+  
+  <Card title="Locking & Versioning" icon="lock" href="/concepts/locking-versioning">
+    Understand lock mechanisms and TTL
+  </Card>
+</CardGroup>

@@ -1,0 +1,115 @@
+---
+title: Compression Options
+description: Configure state compression to optimize storage and network transfer
+---
+
+The ORAS backend supports optional compression of state files to reduce storage usage and network transfer time. State compression is configured via the `compression` parameter.
+
+## Supported Compression Formats
+
+The backend supports two compression options:
+
+- **`none`** (default) - No compression. State is stored as-is.
+- **`gzip`** - GZIP compression using the fastest compression level for optimal performance.
+
+## Configuration
+
+Set the `compression` parameter in your backend configuration:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository  = "ghcr.io/myorg/infra-state"
+    compression = "gzip"
+  }
+}
+```
+
+### Default Behavior
+
+When `compression` is not specified, the backend defaults to `"none"` (no compression).
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/infra-state"
+    # compression defaults to "none"
+  }
+}
+```
+
+## When to Use Compression
+
+### Use GZIP compression when:
+
+- Your state files are large (over 1MB)
+- You have bandwidth constraints or metered network costs
+- Your registry has storage quotas or limits
+- You want to reduce transfer time for remote state operations
+
+### Use no compression when:
+
+- Your state files are small (under 100KB)
+- You prioritize read/write performance over storage efficiency
+- Your registry or network is very fast and storage is cheap
+- You want minimal CPU overhead during state operations
+
+## Performance Considerations
+
+<Note>
+The backend uses `gzip.BestSpeed` compression level to minimize CPU overhead while still achieving reasonable compression ratios. This provides a good balance between compression speed and size reduction.
+</Note>
+
+Compression adds minimal overhead:
+
+- **Write operations**: Compression happens before uploading to the registry
+- **Read operations**: Decompression happens after downloading from the registry
+- **CPU impact**: Typically negligible for most state file sizes
+
+## Storage Format
+
+When compression is enabled, the state layer uses a different media type:
+
+- **Uncompressed**: `application/vnd.terraform.statefile.v1`
+- **GZIP compressed**: `application/vnd.terraform.statefile.v1+gzip`
+
+The backend automatically detects the media type when reading state, so you can safely change the compression setting without migrating existing state.
+
+<Warning>
+Changing the `compression` setting affects only new state writes. Existing state remains in its original format until the next state update. The backend transparently handles both compressed and uncompressed state.
+</Warning>
+
+## Example Configurations
+
+### Production with compression
+
+```hcl
+terraform {
+  backend "oras" {
+    repository   = "ghcr.io/myorg/prod-state"
+    compression  = "gzip"
+    max_versions = 10
+  }
+}
+```
+
+### Development without compression
+
+```hcl
+terraform {
+  backend "oras" {
+    repository  = "ghcr.io/myorg/dev-state"
+    compression = "none"
+  }
+}
+```
+
+## Compression Ratio
+
+Typical compression ratios for Terraform state files:
+
+- Small state files (under 100KB): 40-60% size reduction
+- Medium state files (100KB-1MB): 50-70% size reduction
+- Large state files (over 1MB): 60-80% size reduction
+
+Actual compression ratios vary based on the content and structure of your state file.

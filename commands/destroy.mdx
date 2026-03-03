@@ -1,0 +1,472 @@
+---
+title: 'ghoten destroy'
+description: 'Destroy all infrastructure resources managed by OpenTofu'
+---
+
+## Synopsis
+
+Destroy all infrastructure resources defined in your configuration, removing them from the provider and updating the state in the ORAS backend.
+
+```bash
+ghoten destroy [options]
+```
+
+## Description
+
+The `destroy` command is a convenience wrapper around `ghoten apply -destroy`. It:
+
+1. Generates a destroy plan showing all resources to be removed
+2. Prompts for confirmation (unless `-auto-approve` is used)
+3. Destroys all resources in reverse dependency order
+4. Updates the state file to reflect the removed resources
+5. Pushes the updated state to the ORAS backend
+
+<Warning>
+`destroy` is irreversible. All infrastructure managed by the current configuration will be permanently deleted.
+</Warning>
+
+## Basic usage
+
+### Interactive destroy
+
+```bash
+ghoten destroy
+```
+
+**Output:**
+
+```
+Acquiring state lock. This may take a few moments...
+
+OpenTofu will perform the following actions:
+
+  # aws_instance.web will be destroyed
+  - resource "aws_instance" "web" {
+      - ami           = "ami-0c55b159cbfafe1f0" -> null
+      - instance_type = "t3.micro" -> null
+      - id            = "i-0abcd1234efgh5678" -> null
+      # (29 unchanged attributes hidden)
+    }
+
+Plan: 0 to add, 0 to change, 1 to destroy.
+
+Do you really want to destroy all resources?
+  OpenTofu will destroy all your managed infrastructure.
+  There is no undo. Only 'yes' will be accepted to confirm.
+
+  Enter a value: yes
+
+aws_instance.web: Destroying... [id=i-0abcd1234efgh5678]
+aws_instance.web: Still destroying... [10s elapsed]
+aws_instance.web: Destruction complete after 15s
+
+Destroy complete! Resources: 1 destroyed.
+```
+
+### Auto-approve (non-interactive)
+
+Skip the confirmation prompt:
+
+```bash
+ghoten destroy -auto-approve
+```
+
+<Note>
+Use `-auto-approve` with extreme caution. Ensure you're in the correct workspace and directory.
+</Note>
+
+## ORAS backend behavior during destroy
+
+### State update workflow
+
+After successful destroy:
+
+1. **Acquire lock**: Tag `locked-<workspace>` artifact
+2. **Destroy resources**: Remove infrastructure in reverse dependency order
+3. **Update state**: Mark resources as destroyed in state file
+4. **Push state**: Upload updated state to `state-<workspace>` tag
+5. **Create version**: Tag as `state-<workspace>-vN` (if versioning enabled)
+6. **Release lock**: Remove `locked-<workspace>` tag
+
+**State after destroy:**
+
+The state file is **not deleted**. It remains in the ORAS backend but contains no resources:
+
+```json
+{
+  "version": 4,
+  "terraform_version": "1.8.0",
+  "resources": []
+}
+```
+
+<Info>
+An empty state file is preserved to maintain workspace history and metadata. Delete the workspace explicitly with `ghoten workspace delete` if needed.
+</Info>
+
+### Versioning on destroy
+
+If `max_versions` is configured, destroy creates a versioned snapshot:
+
+```bash
+# Before destroy
+state-default → sha256:abc123... (3 resources)
+state-default-v41 → sha256:def456...
+state-default-v42 → sha256:abc123...
+
+# After destroy
+state-default → sha256:ghi789... (0 resources)
+state-default-v42 → sha256:abc123... (previous state)
+state-default-v43 → sha256:ghi789... (empty state)
+```
+
+<Tip>
+Versioned snapshots enable rollback after accidental destroy operations. Restore from a previous version using state management commands.
+</Tip>
+
+## Common options
+
+### -auto-approve
+
+Skip interactive approval:
+
+```bash
+ghoten destroy -auto-approve
+```
+
+**Use case:** Automated teardown in CI/CD pipelines.
+
+<Warning>
+Always verify workspace and directory before using `-auto-approve`.
+</Warning>
+
+### -target=RESOURCE
+
+Destroy specific resources only:
+
+```bash
+ghoten destroy -target=aws_instance.web
+```
+
+**Output:**
+
+```
+OpenTofu will perform the following actions:
+
+  # aws_instance.web will be destroyed
+  - resource "aws_instance" "web" {
+      - ami = "ami-0c55b159cbfafe1f0" -> null
+    }
+
+Plan: 0 to add, 0 to change, 1 to destroy.
+```
+
+<Warning>
+Destroying individual resources can break dependencies. Use `-target` only when necessary.
+</Warning>
+
+### -var and -var-file
+
+Provide variable values:
+
+```bash
+# Single variable
+ghoten destroy -var="region=us-west-2"
+
+# From a file
+ghoten destroy -var-file="production.tfvars"
+```
+
+### -refresh=false
+
+Skip refreshing state before destroying:
+
+```bash
+ghoten destroy -refresh=false
+```
+
+**Use case:** Force destroy based on state file, ignoring current infrastructure state.
+
+<Note>
+Disabling refresh is risky. Ghoten may attempt to destroy resources that no longer exist, causing errors.
+</Note>
+
+## All options
+
+| Option | Description |
+|--------|-------------|
+| `-auto-approve` | Skip interactive approval |
+| `-backup=PATH` | Path to backup the existing state file |
+| `-compact-warnings` | Compact warnings if no errors |
+| `-input=false` | Disable interactive prompts |
+| `-lock=false` | Disable state locking |
+| `-lock-timeout=DURATION` | Override lock timeout (default: `0s`) |
+| `-no-color` | Disable colorized output |
+| `-parallelism=N` | Limit concurrent resource operations (default: `10`) |
+| `-refresh=false` | Skip refreshing state before destroying |
+| `-state=PATH` | Path to read state (deprecated, use remote state) |
+| `-target=ADDRESS` | Destroy specific resources only |
+| `-var=NAME=VALUE` | Set a variable value |
+| `-var-file=PATH` | Load variable values from file |
+
+## Exit codes
+
+| Exit Code | Meaning |
+|-----------|----------|
+| `0` | Success |
+| `1` | Error (destroy failed, lock acquisition failed, etc.) |
+
+## Examples
+
+### Example 1: Standard destroy workflow
+
+```bash
+# Preview destroy plan
+ghoten plan -destroy
+
+# Review output, then destroy
+ghoten destroy
+
+# Confirm
+Enter a value: yes
+```
+
+### Example 2: Non-interactive destroy for CI
+
+```bash
+ghoten destroy -auto-approve -input=false -no-color
+```
+
+**Example output:**
+
+```
+aws_instance.web: Destroying... [id=i-0abcd1234efgh5678]
+aws_instance.web: Destruction complete after 15s
+
+Destroy complete! Resources: 1 destroyed.
+```
+
+### Example 3: Destroy specific resources
+
+```bash
+# Destroy only the web instance
+ghoten destroy -target=aws_instance.web
+```
+
+**Use case:** Remove a specific resource while preserving others.
+
+### Example 4: Destroy in a specific workspace
+
+```bash
+# Select workspace
+ghoten workspace select staging
+
+# Destroy all resources in staging
+ghoten destroy
+```
+
+**ORAS artifacts updated:**
+- `state-staging` (updated with empty resources)
+- `state-staging-v10` (versioned snapshot of empty state)
+
+### Example 5: Destroy with variable overrides
+
+```bash
+ghoten destroy \
+  -var="environment=staging" \
+  -var-file="staging.tfvars"
+```
+
+### Example 6: Preview destroy plan without executing
+
+```bash
+ghoten plan -destroy
+```
+
+**Output:**
+
+```
+Plan: 0 to add, 0 to change, 5 to destroy.
+```
+
+Review the plan, then decide whether to proceed with `ghoten destroy`.
+
+## Cleanup after destroy
+
+### Remove workspace state
+
+To completely remove the workspace and its state from the ORAS backend:
+
+```bash
+# Destroy resources
+ghoten destroy
+
+# Delete workspace (removes all state artifacts)
+ghoten workspace delete staging
+```
+
+**ORAS artifacts deleted:**
+- `state-staging`
+- `state-staging-v*` (all versions)
+- `locked-staging`
+- `unlocked-staging`
+
+<Warning>
+Deleting a workspace removes all state history. Ensure you have backups if needed.
+</Warning>
+
+### Keep workspace for future use
+
+If you want to preserve the workspace but remove all resources:
+
+```bash
+# Just destroy resources
+ghoten destroy
+
+# Workspace remains, state file is empty
+ghoten workspace show
+# Output: staging
+```
+
+## Troubleshooting
+
+### Error: Resource still exists
+
+**Problem:**
+
+```
+Error: Error destroying resource
+
+Resource aws_instance.web still exists.
+```
+
+**Solution 1:** Retry destroy:
+
+```bash
+ghoten destroy
+```
+
+**Solution 2:** Remove from state if resource is already gone:
+
+```bash
+ghoten state rm aws_instance.web
+```
+
+### Error: Dependent resources exist
+
+**Problem:**
+
+```
+Error: Cannot destroy resource
+
+Resource has dependent resources that must be destroyed first.
+```
+
+**Solution:**
+
+Ghoten handles dependencies automatically. Ensure you're not using `-target` to destroy individual resources.
+
+```bash
+# Destroy all resources in dependency order
+ghoten destroy
+```
+
+### Error: Failed to acquire state lock
+
+**Problem:**
+
+```
+Error: Error acquiring the state lock
+
+Lock ID: abc123-def456
+Path: locked-default
+Operation: apply
+```
+
+**Solution:**
+
+See the [Apply troubleshooting guide](/commands/apply#error-failed-to-acquire-state-lock) for lock resolution steps.
+
+### Destroy succeeded but resources remain
+
+**Problem:** Ghoten reports success, but resources still exist in the provider.
+
+**Solution 1:** Refresh state and retry:
+
+```bash
+ghoten refresh
+ghoten destroy
+```
+
+**Solution 2:** Check for resources outside Ghoten management:
+
+```bash
+# List resources in state
+ghoten state list
+```
+
+If resources are missing from state, import them before destroying:
+
+```bash
+ghoten import aws_instance.web i-0abcd1234efgh5678
+ghoten destroy
+```
+
+## Recovering from accidental destroy
+
+If you accidentally destroyed resources and have versioning enabled:
+
+### Step 1: Identify previous state version
+
+```bash
+# List versions in ORAS backend
+# (Requires direct registry access or ORAS CLI)
+oras repo tags ghcr.io/myorg/infra-state
+```
+
+**Output:**
+
+```
+state-default
+state-default-v41
+state-default-v42  ← Previous state before destroy
+state-default-v43  ← Empty state after destroy
+```
+
+### Step 2: Pull previous state
+
+Use the ORAS CLI or registry UI to download the previous state manifest and layer.
+
+### Step 3: Restore state
+
+```bash
+# Push previous state back
+ghoten state push previous-state.tfstate
+
+# Re-apply to recreate resources
+ghoten apply
+```
+
+<Info>
+State versioning provides a rollback mechanism. Configure `max_versions` to enable this safety net.
+</Info>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Apply Command" icon="check" href="/commands/apply">
+    Rebuild infrastructure after destroy
+  </Card>
+  
+  <Card title="State Management" icon="database" href="/concepts/state-management">
+    Understand state versioning and recovery
+  </Card>
+  
+  <Card title="Workspace Management" icon="folder" href="/commands/overview#workspace-management">
+    Learn about workspace deletion
+  </Card>
+  
+  <Card title="Locking & Versioning" icon="lock" href="/concepts/locking-versioning">
+    Configure lock TTL and version retention
+  </Card>
+</CardGroup>

@@ -1,0 +1,530 @@
+---
+title: 'ghoten apply'
+description: 'Execute planned changes to build or modify infrastructure'
+---
+
+## Synopsis
+
+Apply the changes required to reach the desired state of your configuration, updating infrastructure and storing the new state in the ORAS backend.
+
+```bash
+ghoten apply [options] [plan_file]
+```
+
+## Description
+
+The `apply` command executes the actions proposed in a plan to create, update, or destroy infrastructure resources. After execution, it:
+
+1. Updates the state file with the new infrastructure state
+2. Pushes the updated state to the ORAS backend as an OCI artifact
+3. Creates a versioned state snapshot (if `max_versions` is configured)
+4. Releases the state lock
+
+<Warning>
+`apply` modifies real infrastructure. Always review the plan before confirming.
+</Warning>
+
+## Basic usage
+
+### Interactive apply
+
+```bash
+ghoten apply
+```
+
+**Output:**
+
+```
+Acquiring state lock. This may take a few moments...
+
+OpenTofu will perform the following actions:
+
+  # aws_instance.web will be created
+  + resource "aws_instance" "web" {
+      + ami           = "ami-0c55b159cbfafe1f0"
+      + instance_type = "t3.micro"
+    }
+
+Plan: 1 to add, 0 to change, 0 to destroy.
+
+Do you want to perform these actions?
+  OpenTofu will perform the actions described above.
+  Only 'yes' will be accepted to approve.
+
+  Enter a value: yes
+
+aws_instance.web: Creating...
+aws_instance.web: Still creating... [10s elapsed]
+aws_instance.web: Creation complete after 15s [id=i-0abcd1234efgh5678]
+
+Apply complete! Resources: 1 added, 0 changed, 0 destroyed.
+```
+
+### Auto-approve (non-interactive)
+
+Skip the confirmation prompt:
+
+```bash
+ghoten apply -auto-approve
+```
+
+<Note>
+Use `-auto-approve` in CI/CD pipelines to avoid interactive prompts.
+</Note>
+
+### Apply a saved plan
+
+Execute a previously saved plan file:
+
+```bash
+# Generate and save plan
+ghoten plan -out=tfplan
+
+# Apply the saved plan
+ghoten apply tfplan
+```
+
+**Output:**
+
+```
+aws_instance.web: Creating...
+aws_instance.web: Creation complete after 15s [id=i-0abcd1234efgh5678]
+
+Apply complete! Resources: 1 added, 0 changed, 0 destroyed.
+```
+
+<Tip>
+Applying a saved plan skips the confirmation prompt and ensures the exact reviewed plan is executed.
+</Tip>
+
+## ORAS backend behavior during apply
+
+### State update workflow
+
+When `apply` completes successfully:
+
+1. **Acquire lock**: Tag `locked-<workspace>` artifact
+2. **Execute changes**: Create/update/destroy resources
+3. **Push state**: Upload new state to `state-<workspace>` tag
+4. **Create version**: Tag as `state-<workspace>-vN` (if versioning enabled)
+5. **Enforce retention**: Delete old versions beyond `max_versions` (async)
+6. **Release lock**: Remove `locked-<workspace>` tag
+
+**Registry artifacts after apply:**
+
+```bash
+# Current state
+state-default → sha256:abc123...
+
+# Versioned snapshots (if max_versions > 0)
+state-default-v41 → sha256:def456...
+state-default-v42 → sha256:abc123...
+
+# Lock released (tag deleted)
+# locked-default → (removed)
+```
+
+### Versioning and retention
+
+With `max_versions` configured:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository   = "ghcr.io/myorg/infra-state"
+    max_versions = 10
+  }
+}
+```
+
+Each `apply` creates a new version:
+
+```bash
+# First apply
+state-default-v1
+
+# Second apply
+state-default-v2
+
+# After 10 applies
+state-default-v1 through state-default-v10
+
+# 11th apply: v1 is deleted, v11 is created
+state-default-v2 through state-default-v11
+```
+
+<Info>
+Version retention happens asynchronously. There may be a brief period where version count exceeds `max_versions`.
+</Info>
+
+### State compression
+
+If `compression = "gzip"` is configured:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository  = "ghcr.io/myorg/infra-state"
+    compression = "gzip"
+  }
+}
+```
+
+The state layer is compressed before push:
+
+**Manifest media type:**
+```json
+{
+  "layers": [
+    {
+      "mediaType": "application/vnd.terraform.statefile.v1+gzip",
+      "digest": "sha256:abc123...",
+      "size": 2048
+    }
+  ]
+}
+```
+
+<Tip>
+Compression reduces registry storage costs and transfer time, especially for large state files.
+</Tip>
+
+## Common options
+
+### -auto-approve
+
+Skip interactive approval:
+
+```bash
+ghoten apply -auto-approve
+```
+
+**Use case:** CI/CD pipelines, automation scripts.
+
+### -var and -var-file
+
+Provide variable values:
+
+```bash
+# Single variable
+ghoten apply -var="region=us-west-2"
+
+# Multiple variables
+ghoten apply -var="region=us-west-2" -var="instance_type=t3.large"
+
+# From a file
+ghoten apply -var-file="production.tfvars"
+```
+
+### -target=RESOURCE
+
+Apply changes to specific resources only:
+
+```bash
+ghoten apply -target=aws_instance.web
+```
+
+<Warning>
+Using `-target` can create inconsistent infrastructure state. Only use in exceptional circumstances.
+</Warning>
+
+### -replace=ADDRESS
+
+Force replacement of a specific resource:
+
+```bash
+ghoten apply -replace=aws_instance.web
+```
+
+**Output:**
+
+```
+OpenTofu will perform the following actions:
+
+  # aws_instance.web will be replaced
+-/+ resource "aws_instance" "web" {
+      ~ id            = "i-0abcd1234efgh5678" -> (known after apply)
+      # (unchanged attributes hidden)
+    }
+
+Plan: 1 to add, 0 to change, 1 to destroy.
+```
+
+### -refresh-only
+
+Update state to match remote infrastructure without making changes:
+
+```bash
+ghoten apply -refresh-only
+```
+
+**Use case:** Reconcile state after manual infrastructure changes.
+
+## All options
+
+| Option | Description |
+|--------|-------------|
+| `-auto-approve` | Skip interactive approval |
+| `-backup=PATH` | Path to backup the existing state file |
+| `-compact-warnings` | Compact warnings if no errors |
+| `-input=false` | Disable interactive prompts |
+| `-lock=false` | Disable state locking |
+| `-lock-timeout=DURATION` | Override lock timeout (default: `0s`) |
+| `-no-color` | Disable colorized output |
+| `-parallelism=N` | Limit concurrent resource operations (default: `10`) |
+| `-refresh=false` | Skip refreshing state before applying |
+| `-refresh-only` | Only update state, don't apply changes |
+| `-replace=ADDRESS` | Force replacement of a specific resource |
+| `-state=PATH` | Path to read/write state (deprecated, use remote state) |
+| `-state-out=PATH` | Path to write updated state |
+| `-target=ADDRESS` | Limit apply to specific resources |
+| `-var=NAME=VALUE` | Set a variable value |
+| `-var-file=PATH` | Load variable values from file |
+
+## Exit codes
+
+| Exit Code | Meaning |
+|-----------|----------|
+| `0` | Success |
+| `1` | Error (apply failed, lock acquisition failed, etc.) |
+
+## Examples
+
+### Example 1: Standard apply workflow
+
+```bash
+# Review plan
+ghoten plan
+
+# Apply changes
+ghoten apply
+
+# Confirm
+Enter a value: yes
+```
+
+### Example 2: Non-interactive apply for CI
+
+```bash
+ghoten apply -auto-approve -input=false -no-color
+```
+
+**Example output:**
+
+```
+aws_instance.web: Creating...
+aws_instance.web: Creation complete after 15s [id=i-0abcd1234efgh5678]
+
+Apply complete! Resources: 1 added, 0 changed, 0 destroyed.
+```
+
+### Example 3: Apply with saved plan
+
+```bash
+# Plan step
+ghoten plan -out=tfplan
+
+# Review (optional)
+ghoten show tfplan
+
+# Apply step
+ghoten apply tfplan
+```
+
+<Info>
+Applying a saved plan ensures the exact reviewed changes are executed, even if configuration files change between planning and applying.
+</Info>
+
+### Example 4: Apply for specific workspace
+
+```bash
+# Select workspace
+ghoten workspace select production
+
+# Apply
+ghoten apply
+```
+
+**ORAS artifacts updated:**
+- `state-production` (current state)
+- `state-production-v42` (versioned snapshot)
+
+### Example 5: Force replacement of a resource
+
+```bash
+# Replace a specific instance
+ghoten apply -replace=aws_instance.web
+```
+
+**Use case:** Recreate a resource without changing configuration (e.g., to pick up new AMI).
+
+### Example 6: Refresh state only
+
+```bash
+# Detect drift and update state
+ghoten apply -refresh-only
+```
+
+**Output if drift detected:**
+
+```
+OpenTofu has detected changes outside of Ghoten:
+
+  # aws_instance.web has changed
+  ~ resource "aws_instance" "web" {
+      ~ tags = {
+          + "Environment" = "production"
+        }
+    }
+
+This is a refresh-only plan. Apply these changes?
+Enter a value: yes
+
+Apply complete! Resources: 0 added, 0 changed, 0 destroyed.
+```
+
+## Troubleshooting
+
+### Error: Failed to acquire state lock
+
+**Problem:**
+
+```
+Error: Error acquiring the state lock
+
+Lock ID: abc123-def456
+Path: locked-default
+Operation: apply
+```
+
+**Solution 1:** Wait for other operation to complete.
+
+**Solution 2:** Configure auto-expiration:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/infra-state"
+    lock_ttl   = 300  # Auto-expire after 5 minutes
+  }
+}
+```
+
+**Solution 3:** Force unlock (use with caution):
+
+```bash
+ghoten force-unlock abc123-def456
+```
+
+### Error: Failed to push state to ORAS backend
+
+**Problem:**
+
+```
+Error: Failed to save state
+
+Failed to push state to ghcr.io/myorg/infra-state: authentication required
+```
+
+**Solution:**
+
+Re-authenticate to the registry:
+
+```bash
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u YOUR_USERNAME --password-stdin
+ghoten apply
+```
+
+### Error: Resource already exists
+
+**Problem:**
+
+```
+Error: Error creating resource
+
+A resource with the same name already exists.
+```
+
+**Solution 1:** Import existing resource:
+
+```bash
+ghoten import aws_instance.web i-0abcd1234efgh5678
+```
+
+**Solution 2:** Use a different resource name in configuration.
+
+### Apply succeeded but state push failed
+
+**Problem:** Infrastructure was created but state wasn't saved to ORAS.
+
+**Solution:**
+
+Check local state file:
+
+```bash
+ls -la terraform.tfstate
+```
+
+Manually push state:
+
+```bash
+ghoten state push terraform.tfstate
+```
+
+<Warning>
+If apply succeeds but state push fails, your local state file may be out of sync with the ORAS backend. Resolve authentication issues before continuing.
+</Warning>
+
+## Outputs after apply
+
+After successful apply, Ghoten displays outputs defined in your configuration:
+
+**Configuration:**
+
+```hcl
+output "instance_id" {
+  value = aws_instance.web.id
+}
+
+output "public_ip" {
+  value = aws_instance.web.public_ip
+}
+```
+
+**Output:**
+
+```
+Apply complete! Resources: 1 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+instance_id = "i-0abcd1234efgh5678"
+public_ip = "54.123.45.67"
+```
+
+Retrieve outputs later:
+
+```bash
+ghoten output instance_id
+ghoten output -json
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Destroy Command" icon="trash" href="/commands/destroy">
+    Tear down infrastructure resources
+  </Card>
+  
+  <Card title="State Management" icon="database" href="/concepts/state-management">
+    Understand state versioning and retention
+  </Card>
+  
+  <Card title="State Locking" icon="lock" href="/concepts/locking-versioning">
+    Learn about lock TTL and automatic expiration
+  </Card>
+  
+  <Card title="GitHub Action" icon="github" href="/usage/github-action">
+    Automate apply operations in CI/CD
+  </Card>
+</CardGroup>

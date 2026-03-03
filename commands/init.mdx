@@ -1,0 +1,427 @@
+---
+title: 'ghoten init'
+description: 'Initialize a working directory with ORAS backend configuration'
+---
+
+## Synopsis
+
+Prepare your working directory for other commands by downloading modules, initializing the ORAS backend, and installing required providers.
+
+```bash
+ghoten init [options]
+```
+
+## Description
+
+The `init` command initializes a working directory containing OpenTofu configuration files. This is the first command to run after writing new configuration or cloning an existing repository.
+
+**What init does:**
+
+1. Downloads and installs provider plugins
+2. Downloads modules referenced in configuration
+3. Initializes the ORAS backend for state storage
+4. Creates the `.terraform` directory for cached plugins and modules
+
+<Note>
+Running `init` is safe to repeat. It will not delete existing state or configuration.
+</Note>
+
+## Basic usage
+
+### Initialize with ORAS backend
+
+```bash
+ghoten init
+```
+
+**Example output:**
+
+```
+Initializing the backend...
+
+Successfully configured the backend "oras"!
+
+Initializing provider plugins...
+- Finding hashicorp/aws versions matching "~> 5.0"...
+- Installing hashicorp/aws v5.31.0...
+- Installed hashicorp/aws v5.31.0 (signed by HashiCorp)
+
+OpenTofu has been successfully initialized!
+```
+
+### First-time backend configuration
+
+If your `main.tf` includes an ORAS backend block:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository   = "ghcr.io/myorg/infra-state"
+    compression  = "gzip"
+    lock_ttl     = 300
+    max_versions = 10
+  }
+}
+```
+
+Running `init` will:
+
+1. Authenticate to the registry using Docker credentials
+2. Create the repository if it doesn't exist
+3. Initialize state storage as an OCI artifact
+
+<Warning>
+The `repository` parameter is **required** for ORAS backend initialization.
+</Warning>
+
+## Common options
+
+### -upgrade
+
+Upgrade modules and provider plugins to the latest versions within version constraints:
+
+```bash
+ghoten init -upgrade
+```
+
+**When to use:**
+- After updating version constraints in configuration
+- To pick up bug fixes or new features in providers
+
+### -reconfigure
+
+Reconfigure the backend, ignoring any saved configuration:
+
+```bash
+ghoten init -reconfigure
+```
+
+**When to use:**
+- Switching from a different backend to ORAS
+- Changing the ORAS repository URL
+- Recovering from backend configuration errors
+
+<Info>
+Use `-reconfigure` instead of manually deleting `.terraform/terraform.tfstate` when changing backends.
+</Info>
+
+### -migrate-state
+
+Migrate existing state from another backend to ORAS:
+
+```bash
+ghoten init -migrate-state
+```
+
+**Interactive prompt:**
+
+```
+Do you want to copy existing state to the new backend?
+  Pre-existing state was found in the local backend.
+  
+Would you like to migrate this state to the "oras" backend?
+Enter a value: yes
+
+Successfully migrated state to "oras" backend.
+```
+
+<Tip>
+This is the safest way to move state from S3, local files, or other backends to ORAS.
+</Tip>
+
+### -backend-config
+
+Override backend configuration with command-line values:
+
+```bash
+ghoten init -backend-config="repository=ghcr.io/acme/prod-state"
+```
+
+**Multiple values:**
+
+```bash
+ghoten init \
+  -backend-config="repository=ghcr.io/acme/prod-state" \
+  -backend-config="compression=gzip"
+```
+
+**From a file:**
+
+```bash
+ghoten init -backend-config=backend.hcl
+```
+
+Where `backend.hcl` contains:
+
+```hcl
+repository   = "ghcr.io/acme/prod-state"
+compression  = "gzip"
+max_versions = 20
+```
+
+<Note>
+Command-line `-backend-config` values override settings in the configuration file.
+</Note>
+
+### -from-module
+
+Copy a module into the current directory before initialization:
+
+```bash
+ghoten init -from-module=github.com/myorg/terraform-modules//vpc
+```
+
+This is equivalent to:
+
+```bash
+git clone https://github.com/myorg/terraform-modules
+cp -r terraform-modules/vpc/* .
+ghoten init
+```
+
+## ORAS backend-specific behavior
+
+### Authentication check
+
+During `init`, Ghoten verifies registry authentication:
+
+```bash
+ghoten init
+```
+
+**If authentication fails:**
+
+```
+Error: Failed to configure backend "oras"
+
+Authentication failed for ghcr.io: unauthorized
+
+Ensure you are logged in:
+  echo "$GITHUB_TOKEN" | docker login ghcr.io -u USERNAME --password-stdin
+```
+
+### State artifact initialization
+
+On first `init`, Ghoten creates the initial state artifact structure:
+
+**OCI artifacts created:**
+
+| Tag | Purpose |
+|-----|----------|
+| `state-default` | Current state for the default workspace |
+| `unlocked-default` | Placeholder for unlocked state |
+
+No versioned tags exist until the first `apply` operation.
+
+### Workspace detection
+
+If you previously used a different workspace:
+
+```bash
+ghoten workspace select production
+ghoten init
+```
+
+**Output:**
+
+```
+Initializing the backend...
+
+Successfully configured the backend "oras"!
+
+Workspace: production
+```
+
+The backend loads state from the `state-production` artifact.
+
+## All options
+
+| Option | Description |
+|--------|-------------|
+| `-backend=false` | Disable backend initialization (useful for modules) |
+| `-backend-config=PATH` | Override backend configuration from file or CLI |
+| `-force-copy` | Suppress prompts when copying state from previous backend |
+| `-from-module=SOURCE` | Copy module into directory before initializing |
+| `-get=false` | Disable downloading modules |
+| `-input=false` | Disable interactive prompts |
+| `-lock=false` | Disable state locking during backend initialization |
+| `-lock-timeout=DURATION` | Override lock timeout (default: `0s`) |
+| `-migrate-state` | Migrate existing state to the new backend |
+| `-no-color` | Disable colorized output |
+| `-plugin-dir=PATH` | Override plugin installation directory |
+| `-reconfigure` | Reconfigure backend, ignoring saved configuration |
+| `-upgrade` | Upgrade modules and provider plugins |
+
+## Exit codes
+
+| Exit Code | Meaning |
+|-----------|----------|
+| `0` | Success |
+| `1` | Error (invalid configuration, authentication failed, etc.) |
+
+## Examples
+
+### Example 1: Standard initialization
+
+```bash
+cd my-infrastructure/
+ghoten init
+```
+
+**Result:** Downloads providers, initializes ORAS backend with default workspace.
+
+### Example 2: Migrate from S3 to ORAS
+
+**Before:** `main.tf` with S3 backend
+
+```hcl
+terraform {
+  backend "s3" {
+    bucket = "my-tf-state"
+    key    = "prod/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+```
+
+**After:** Update to ORAS backend
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/infra-state"
+  }
+}
+```
+
+**Migrate:**
+
+```bash
+ghoten init -migrate-state
+```
+
+**Output:**
+
+```
+Initializing the backend...
+
+Do you want to copy existing state to the new backend?
+  Pre-existing state was found in the S3 backend.
+  
+Would you like to migrate this state to the "oras" backend?
+Enter a value: yes
+
+Successfully migrated state from "s3" to "oras".
+```
+
+### Example 3: Initialize with backend override
+
+Useful for different environments without changing `main.tf`:
+
+```bash
+# Production
+ghoten init -backend-config="repository=ghcr.io/myorg/prod-state"
+
+# Staging
+ghoten init -backend-config="repository=ghcr.io/myorg/staging-state"
+```
+
+### Example 4: Upgrade providers
+
+```bash
+ghoten init -upgrade
+```
+
+**Output:**
+
+```
+Upgrading hashicorp/aws...
+- Finding hashicorp/aws versions matching "~> 5.0"...
+- Using previously-installed hashicorp/aws v5.30.0
+- Installing hashicorp/aws v5.31.0...
+- Installed hashicorp/aws v5.31.0 (signed by HashiCorp)
+```
+
+### Example 5: Non-interactive initialization for CI
+
+```bash
+ghoten init -input=false -no-color
+```
+
+Suppresses all prompts and color output, ideal for CI/CD pipelines.
+
+## Troubleshooting
+
+### Error: Authentication failed
+
+**Problem:**
+
+```
+Error: Failed to configure backend "oras"
+
+Authentication failed for ghcr.io: unauthorized
+```
+
+**Solution:**
+
+```bash
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u YOUR_USERNAME --password-stdin
+ghoten init
+```
+
+Ensure your token has `read:packages` and `write:packages` scopes.
+
+### Error: Repository not found
+
+**Problem:**
+
+```
+Error: Failed to configure backend "oras"
+
+Repository ghcr.io/myorg/infra-state not found
+```
+
+**Solution:**
+
+The repository will be created automatically on first push. Ensure your token has write permissions.
+
+### Backend configuration changed
+
+**Problem:**
+
+```
+Error: Backend configuration changed
+
+A change in the backend configuration has been detected, which may require
+migrating existing state.
+```
+
+**Solution:**
+
+```bash
+# Option 1: Reconfigure without migration
+ghoten init -reconfigure
+
+# Option 2: Migrate state to new backend
+ghoten init -migrate-state
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Plan Command" icon="clipboard-list" href="/commands/plan">
+    Generate an execution plan after initialization
+  </Card>
+  
+  <Card title="Backend Configuration" icon="gear" href="/reference/backend-config">
+    Complete ORAS backend configuration reference
+  </Card>
+  
+  <Card title="Authentication" icon="key" href="/usage/authentication">
+    Configure registry authentication
+  </Card>
+  
+  <Card title="State Management" icon="database" href="/concepts/state-management">
+    Learn how state is stored in OCI registries
+  </Card>
+</CardGroup>

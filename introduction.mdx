@@ -1,0 +1,123 @@
+---
+title: "Introduction"
+description: "OpenTofu with native ORAS backend for OCI-based state storage"
+---
+
+## What is Ghoten?
+
+Ghoten is an [OpenTofu](https://opentofu.org/) fork that adds one opinionated feature: a native `oras` backend for storing state in OCI registries (like GitHub Container Registry), without extra services.
+
+We built it for teams that already trust container registries and want fewer moving parts in Terraform/OpenTofu state management. Instead of running a custom HTTP backend, you can reuse registry auth, permissions, and auditing you already have.
+
+<Note>
+**Name origin:** *Ghoten* blends **G**it**H**ub and Open**T**o**f**u, with a nod to [Goten](https://dragonball.fandom.com/wiki/Goten) from *Dragon Ball Z*.
+</Note>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Registry-First State" icon="database">
+    State, locks, and versions are stored as OCI artifacts in your existing container registry.
+  </Card>
+  
+  <Card title="Operationally Simple" icon="server">
+    No separate backend service to deploy and maintain. Uses infrastructure you already have.
+  </Card>
+  
+  <Card title="Safe by Default" icon="lock">
+    Built-in locking, retries, and optional compression. Supports OpenTofu state encryption.
+  </Card>
+  
+  <Card title="GitHub Actions Ready" icon="code-branch">
+    Official action handles install, auth, init, PR comments, and job summaries automatically.
+  </Card>
+</CardGroup>
+
+## Why This Approach?
+
+For teams already using OCI registries:
+
+- **Unified infrastructure**: Reuse the same registry, auth, and permissions you use for containers
+- **Battle-tested storage**: OCI registries are designed for versioned, immutable artifacts
+- **Simpler operations**: Fewer services to secure, monitor, and maintain
+- **Native tooling**: Works with standard registry tools and policies
+
+## Quick Example
+
+Store your OpenTofu state in GitHub Container Registry:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/acme/infra-state"
+  }
+}
+```
+
+Authenticate and initialize:
+
+```bash
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin
+./ghoten init
+./ghoten plan
+```
+
+## Get Started
+
+<CardGroup cols={2}>
+  <Card 
+    title="Quickstart" 
+    icon="rocket" 
+    href="/quickstart"
+  >
+    Get from zero to a working `ghoten plan` with OCI-backed state in minutes.
+  </Card>
+  
+  <Card 
+    title="ORAS Backend" 
+    icon="box" 
+    href="/concepts/oras-backend"
+  >
+    Learn how the ORAS backend stores state, locks, and versions in OCI registries.
+  </Card>
+  
+  <Card 
+    title="GitHub Action" 
+    icon="github" 
+    href="/usage/github-action"
+  >
+    Use the official action for seamless CI/CD with PR comments and job summaries.
+  </Card>
+  
+  <Card 
+    title="Configuration" 
+    icon="gear" 
+    href="/usage/configuration"
+  >
+    Configure compression, locking, rate limits, and version retention.
+  </Card>
+</CardGroup>
+
+## Limitations
+
+Before you start:
+
+- Most production validation is on GitHub Container Registry (GHCR); other OCI registries are expected to work but are less battle-tested
+- If you need advanced backend workflows (multi-region replication policies, custom APIs), dedicated backend platforms may be a better fit
+- This is an upstream-tracking fork of OpenTofu focused solely on the ORAS backend
+
+## Next Steps
+
+<Steps>
+  <Step title="Follow the quickstart">
+    Get `ghoten` running locally with the [quickstart guide](/quickstart).
+  </Step>
+  
+  <Step title="Understand the backend">
+    Learn how state is represented in OCI in [ORAS backend concepts](/concepts/oras-backend).
+  </Step>
+  
+  <Step title="Set up CI/CD">
+    Automate your workflow with the [GitHub Action guide](/usage/github-action).
+  </Step>
+</Steps>

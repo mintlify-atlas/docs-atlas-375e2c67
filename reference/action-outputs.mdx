@@ -1,0 +1,99 @@
+---
+title: Action Outputs
+description: Complete reference for all Ghoten GitHub Action outputs
+---
+
+The Ghoten GitHub Action provides several outputs that you can use in subsequent workflow steps. These outputs allow you to conditionally execute steps, capture command results, or integrate with other actions.
+
+## Command Execution
+
+<ParamField path="exitcode" type="number">
+  Exit code of the ghoten command
+  
+  Returns the numeric exit code from the command execution. Use this to determine if the command succeeded (0) or failed (non-zero).
+  
+  ```yaml
+  - uses: vmvarela/ghoten@v1
+    id: plan
+  
+  - name: Check if command succeeded
+    if: steps.plan.outputs.exitcode == '0'
+    run: echo "Plan succeeded"
+  ```
+</ParamField>
+
+<ParamField path="stdout" type="string">
+  Full command output
+  
+  Captures the complete output from the ghoten command. Useful for logging, debugging, or passing output to other tools.
+  
+  ```yaml
+  - uses: vmvarela/ghoten@v1
+    id: plan
+  
+  - name: Save output to file
+    run: echo "${{ steps.plan.outputs.stdout }}" > plan-output.txt
+  ```
+</ParamField>
+
+## Plan Detection
+
+<ParamField path="plan-has-changes" type="boolean">
+  Whether plan detected infrastructure changes (true/false)
+  
+  Returns `true` if the plan command detected changes to infrastructure, `false` if no changes were found. Only set when `command: plan` is used.
+  
+  ```yaml
+  - uses: vmvarela/ghoten@v1
+    id: plan
+    with:
+      command: plan
+  
+  - uses: vmvarela/ghoten@v1
+    if: steps.plan.outputs.plan-has-changes == 'true'
+    with:
+      command: apply
+  ```
+</ParamField>
+
+<ParamField path="plan-file" type="string">
+  Absolute path to the binary plan file (when command=plan and changes exist)
+  
+  Provides the full path to the generated plan file when a plan with changes is created. Returns empty if no changes were detected or if the command is not `plan`.
+  
+  ```yaml
+  - uses: vmvarela/ghoten@v1
+    id: plan
+    with:
+      command: plan
+  
+  - name: Archive plan file
+    if: steps.plan.outputs.plan-file != ''
+    uses: actions/upload-artifact@v4
+    with:
+      name: terraform-plan
+      path: ${{ steps.plan.outputs.plan-file }}
+  ```
+</ParamField>
+
+## Formatting
+
+<ParamField path="fmt-result" type="boolean">
+  Whether fmt found formatting differences (true/false)
+  
+  Returns `true` if the fmt command found files that need formatting, `false` if all files are properly formatted. Only set when `command: fmt` is used.
+  
+  ```yaml
+  - uses: vmvarela/ghoten@v1
+    id: fmt
+    with:
+      command: fmt
+      fmt-check: true
+  
+  - name: Fail if formatting needed
+    if: steps.fmt.outputs.fmt-result == 'true'
+    run: |
+      echo "Files need formatting. Run 'tofu fmt' locally."
+      exit 1
+  ```
+</ParamField>

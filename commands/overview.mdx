@@ -1,0 +1,220 @@
+---
+title: 'Commands Overview'
+description: 'Complete reference for all Ghoten CLI commands'
+---
+
+## Overview
+
+Ghoten is a drop-in replacement for OpenTofu/Terraform that uses OCI registries for state storage via the ORAS backend. All standard OpenTofu commands work with Ghoten, with state operations transparently backed by container registries instead of traditional backends.
+
+## Primary workflow commands
+
+These commands represent the core workflow for infrastructure management:
+
+<CardGroup cols={2}>
+  <Card title="init" icon="play" href="/commands/init">
+    Initialize a working directory containing configuration files
+  </Card>
+  
+  <Card title="plan" icon="clipboard-list" href="/commands/plan">
+    Generate and show an execution plan
+  </Card>
+  
+  <Card title="apply" icon="check" href="/commands/apply">
+    Build or change infrastructure
+  </Card>
+  
+  <Card title="destroy" icon="trash" href="/commands/destroy">
+    Destroy previously-created infrastructure
+  </Card>
+</CardGroup>
+
+## Command categories
+
+### State management
+
+All state operations use the ORAS backend when configured:
+
+- `ghoten state list` - List resources in the state
+- `ghoten state show` - Show a resource in the state
+- `ghoten state mv` - Move an item in the state
+- `ghoten state rm` - Remove items from the state
+- `ghoten state pull` - Pull current state from the ORAS backend
+- `ghoten state push` - Update remote state from a local state file
+
+<Note>
+State commands interact with OCI artifacts tagged as `state-<workspace>` in your configured repository.
+</Note>
+
+### Workspace management
+
+Workspaces allow multiple state files within a single backend:
+
+- `ghoten workspace list` - List workspaces
+- `ghoten workspace select` - Select a workspace
+- `ghoten workspace new` - Create a new workspace
+- `ghoten workspace delete` - Delete an existing workspace
+- `ghoten workspace show` - Show the name of the current workspace
+
+<Info>
+Each workspace stores its state as a separate OCI artifact with tags like `state-production`, `state-staging`, etc.
+</Info>
+
+### Inspection and validation
+
+- `ghoten validate` - Validate the configuration files
+- `ghoten show` - Show the current state or a saved plan
+- `ghoten output` - Read an output from a state file
+- `ghoten providers` - Show the providers required for this configuration
+- `ghoten console` - Interactive console for evaluating expressions
+- `ghoten graph` - Generate a visual graph of resources
+
+### Provider management
+
+- `ghoten providers lock` - Write provider dependency locks
+- `ghoten providers mirror` - Mirror provider plugins to a local directory
+- `ghoten providers schema` - Show schemas for the providers used
+
+### Other commands
+
+- `ghoten fmt` - Format configuration files to canonical style
+- `ghoten get` - Download and install modules for the configuration
+- `ghoten import` - Import existing infrastructure into Ghoten
+- `ghoten refresh` - Update the state to match remote systems
+- `ghoten taint` - Mark a resource instance as not fully functional
+- `ghoten untaint` - Remove the tainted state from a resource instance
+- `ghoten force-unlock` - Manually unlock the state
+- `ghoten login` - Obtain and save credentials for a remote host
+- `ghoten logout` - Remove locally-stored credentials for a remote host
+- `ghoten test` - Execute integration tests for modules
+- `ghoten version` - Show the current Ghoten version
+
+## Global options
+
+These options work with all commands:
+
+| Option | Description |
+|--------|-------------|
+| `-chdir=DIR` | Switch to a different working directory before executing the command |
+| `-help` | Show help output for the command |
+| `-version` | Show the Ghoten version |
+
+### Example: Using -chdir
+
+```bash
+ghoten -chdir=./environments/production plan
+```
+
+This changes to the `environments/production` directory before running `plan`.
+
+## ORAS backend context
+
+When using Ghoten with the ORAS backend, commands that interact with state behave differently from traditional backends:
+
+### State locking behavior
+
+```bash
+# Lock is acquired as an OCI artifact
+ghoten apply
+
+Initializing the backend...
+Acquiring state lock. This may take a few moments...
+# Lock artifact is tagged as locked-default
+```
+
+<Warning>
+If a lock is held after a crashed job, set `lock_ttl` in your backend config to enable automatic lock expiration.
+</Warning>
+
+### State versioning
+
+When `max_versions` is configured, each state update creates a versioned tag:
+
+```bash
+ghoten apply
+
+# State artifacts created:
+# - state-default (current state)
+# - state-default-v42 (versioned snapshot)
+```
+
+<Tip>
+Versioned state artifacts enable rollback and audit capabilities. Configure `max_versions` to control retention.
+</Tip>
+
+## Environment variables
+
+Several environment variables affect command behavior:
+
+| Variable | Purpose |
+|----------|----------|
+| `TF_LOG` | Enable debug logging (set to `DEBUG`, `INFO`, `WARN`, `ERROR`) |
+| `TF_IN_AUTOMATION` | Suppress interactive prompts when running in CI/CD |
+| `TF_CLI_ARGS` | Append additional CLI arguments to all commands |
+| `TF_DATA_DIR` | Override the data directory (default: `.terraform`) |
+
+### Example: Debug logging
+
+```bash
+TF_LOG=DEBUG ghoten plan
+```
+
+This enables detailed debug output for troubleshooting ORAS backend interactions.
+
+## Exit codes
+
+Ghoten commands use standard exit codes:
+
+| Exit Code | Meaning |
+|-----------|----------|
+| `0` | Success |
+| `1` | Error (invalid configuration, operation failed, etc.) |
+| `2` | Success with non-empty diff (only for `plan` with `-detailed-exitcode`) |
+
+### Example: Using exit codes in CI
+
+```bash
+ghoten plan -detailed-exitcode
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -eq 0 ]; then
+  echo "No changes needed"
+elif [ $EXIT_CODE -eq 2 ]; then
+  echo "Changes detected, proceed with apply"
+else
+  echo "Plan failed"
+  exit 1
+fi
+```
+
+## Command help
+
+Every command supports the `-help` flag:
+
+```bash
+ghoten init -help
+ghoten plan -help
+ghoten apply -help
+```
+
+This displays command-specific options and usage examples.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Init Command" icon="play" href="/commands/init">
+    Learn how to initialize a Ghoten working directory
+  </Card>
+  
+  <Card title="Plan Command" icon="clipboard-list" href="/commands/plan">
+    Generate execution plans with ORAS-backed state
+  </Card>
+  
+  <Card title="State Management" icon="database" href="/concepts/state-management">
+    Understand how state is stored in OCI registries
+  </Card>
+  
+  <Card title="Environment Variables" icon="gear" href="/reference/environment-variables">
+    Complete reference for all environment variables
+  </Card>
+</CardGroup>

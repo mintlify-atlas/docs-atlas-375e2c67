@@ -1,0 +1,166 @@
+---
+title: 'ORAS Backend'
+description: 'Store OpenTofu state as OCI artifacts in container registries'
+---
+
+## What is the ORAS backend?
+
+The ORAS (OCI Registry As Storage) backend stores OpenTofu state directly as OCI artifacts in container registries. Instead of running a dedicated HTTP backend service, you leverage OCI registries you already operate—such as GitHub Container Registry (GHCR), Docker Hub, or private registries.
+
+<Note>
+This backend is ideal when your organization already has registry authentication, audit trails, and permissions in place. It is not suitable if you need backend-specific APIs or advanced policy engines that OCI registries do not provide.
+</Note>
+
+## How it works
+
+The ORAS backend stores state files as OCI artifacts using the OCI Distribution Specification. Each workspace's state is represented as an OCI image manifest with layers containing the compressed state data.
+
+### Storage model
+
+State artifacts are stored with a specific structure:
+
+- **State layer**: Contains the actual state file data
+- **Manifest**: OCI image manifest with metadata annotations
+- **Tags**: Stable pointers to current state, locks, and historical versions
+
+### Media types
+
+The backend uses custom media types to identify state artifacts:
+
+| Artifact Type | Media Type | Purpose |
+|--------------|------------|----------|
+| State artifact | `application/vnd.terraform.state.v1` | State manifest |
+| Uncompressed state | `application/vnd.terraform.statefile.v1` | Raw state layer |
+| Compressed state | `application/vnd.terraform.statefile.v1+gzip` | Gzip-compressed state layer |
+| Lock artifact | `application/vnd.terraform.lock.v1` | Lock manifest |
+
+## Configuration
+
+### Minimal configuration
+
+The only required parameter is `repository`:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/acme/infra-state"
+  }
+}
+```
+
+### Production configuration
+
+For production environments, use this baseline configuration:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository   = "ghcr.io/myorg/infra-state"
+    compression  = "gzip"
+    lock_ttl     = 300
+    max_versions = 10
+  }
+
+  encryption {
+    key_provider "pbkdf2" "main" {
+      passphrase = var.state_passphrase
+    }
+    method "aes_gcm" "main" {
+      key_provider = key_provider.pbkdf2.main
+    }
+    state { method = method.aes_gcm.main }
+    plan  { method = method.aes_gcm.main }
+  }
+}
+```
+
+<Warning>
+For production systems, prefer a KMS-backed key provider over PBKDF2 passphrases for better security.
+</Warning>
+
+### Configuration parameters
+
+| Parameter | Type | Default | Environment Variable | Description |
+|-----------|------|---------|----------------------|-------------|
+| `repository` | string | — | `TF_BACKEND_ORAS_REPOSITORY` | **Required.** OCI repository in format `<registry>/<repo>` |
+| `compression` | string | `none` | — | Compression algorithm: `none` or `gzip` |
+| `insecure` | bool | `false` | — | Skip TLS certificate verification |
+| `ca_file` | string | — | — | Path to PEM-encoded CA certificate bundle |
+| `retry_max` | int | `2` | `TF_BACKEND_ORAS_RETRY_MAX` | Number of retries for transient errors |
+| `retry_wait_min` | int | `1` | `TF_BACKEND_ORAS_RETRY_WAIT_MIN` | Minimum backoff time (seconds) |
+| `retry_wait_max` | int | `30` | `TF_BACKEND_ORAS_RETRY_WAIT_MAX` | Maximum backoff time (seconds) |
+| `lock_ttl` | int | `0` | `TF_BACKEND_ORAS_LOCK_TTL` | Lock TTL in seconds (0 disables automatic cleanup) |
+| `rate_limit` | int | `0` | `TF_BACKEND_ORAS_RATE_LIMIT` | Requests per second (0 disables rate limiting) |
+| `rate_limit_burst` | int | `0` | `TF_BACKEND_ORAS_RATE_LIMIT_BURST` | Token bucket burst size |
+| `max_versions` | int | `0` | — | Historical versions to retain (0 disables versioning) |
+
+## Authentication
+
+Ghoten resolves credentials in the following order:
+
+1. **Docker credential helpers**: Uses credentials from `docker login` or credential stores
+2. **CLI host credentials**: Falls back to Ghoten/Terraform-style host tokens
+
+<Tip>
+If authentication fails, run `docker login <registry>` first. This resolves most authentication issues faster than configuring backend flags.
+</Tip>
+
+### Required permissions
+
+For GitHub Container Registry (GHCR), ensure your token has:
+- `read:packages` - Read package data
+- `write:packages` - Push state artifacts
+- `delete:packages` - Delete old versions (when using versioning)
+
+## Workspace management
+
+The ORAS backend stores each workspace as a separate set of tagged artifacts:
+
+```hcl
+# Initialize with default workspace
+tofu init
+
+# Create and switch to a new workspace
+tofu workspace new staging
+tofu workspace select staging
+
+# List all workspaces
+tofu workspace list
+```
+
+Workspace artifacts are stored with tags based on the workspace name. If the name is not a valid OCI tag, Ghoten uses a hash-based tag and stores the original name in manifest annotations.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Unauthorized or denied errors">
+    Re-run `docker login <registry>`. For GHCR, ensure your token has `read:packages` and `write:packages` scopes.
+  </Accordion>
+  
+  <Accordion title="Lock appears stuck">
+    Set `lock_ttl = 300` to automatically clear stale locks on the next lock acquisition attempt.
+  </Accordion>
+  
+  <Accordion title="Deleting versions fails on GHCR">
+    Ghoten automatically falls back to the GitHub Packages API. Ensure your token has `delete:packages` permission.
+  </Accordion>
+  
+  <Accordion title="Need detailed diagnostics">
+    Run with debug logging enabled:
+    ```bash
+    TF_LOG=DEBUG ghoten plan
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="State Management" icon="database" href="/concepts/state-management">
+    Learn how state is stored, tagged, and versioned
+  </Card>
+  
+  <Card title="Locking & Versioning" icon="lock" href="/concepts/locking-versioning">
+    Understand lock mechanisms and version retention
+  </Card>
+</CardGroup>

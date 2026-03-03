@@ -1,0 +1,383 @@
+---
+title: GitHub Action
+description: Use the Ghoten GitHub Action for automated infrastructure workflows
+---
+
+The `vmvarela/ghoten@v1` GitHub Action provides the fastest way to run OpenTofu with OCI-backed state in GitHub Actions. It handles installation, authentication, initialization, command execution, and can post PR comments plus job summaries.
+
+## Quick Start
+
+Minimal PR plan workflow with automatic PR comments and job summaries:
+
+```yaml
+name: Infra Plan
+on: pull_request
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: vmvarela/ghoten@v1
+```
+
+This defaults to `command: plan`, posts a PR comment with the plan output, and writes a GitHub Job Summary.
+
+## Common Workflows
+
+### Plan on PR, Apply on Main
+
+Separate review and apply stages for safe infrastructure changes:
+
+```yaml
+name: Infrastructure
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: vmvarela/ghoten@v1
+
+  apply:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: vmvarela/ghoten@v1
+        with:
+          command: apply
+```
+
+### Monorepo with Multiple Environments
+
+Manage multiple infrastructure stacks in a single repository:
+
+```yaml
+name: Infrastructure
+on:
+  pull_request:
+    paths:
+      - 'infrastructure/**'
+
+jobs:
+  plan-staging:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: vmvarela/ghoten@v1
+        with:
+          working-directory: infrastructure/staging
+          backend-repository: ghcr.io/myorg/tf-state-staging
+          var-file: staging.tfvars
+
+  plan-production:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: vmvarela/ghoten@v1
+        with:
+          working-directory: infrastructure/production
+          backend-repository: ghcr.io/myorg/tf-state-production
+          var-file: production.tfvars
+```
+
+### Conditional Apply
+
+Apply only when plan detects changes:
+
+```yaml
+steps:
+  - uses: actions/checkout@v6
+  
+  - uses: vmvarela/ghoten@v1
+    id: plan
+    with:
+      command: plan
+  
+  - uses: vmvarela/ghoten@v1
+    if: steps.plan.outputs.plan-has-changes == 'true'
+    with:
+      command: apply
+```
+
+## Action Inputs
+
+### Essential Inputs
+
+The most commonly used configuration options:
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `command` | `plan` | Command to run: `plan`, `apply`, `destroy`, `fmt`, or `validate` |
+| `working-directory` | `.` | Directory containing HCL configuration files |
+| `backend-repository` | `ghcr.io/<owner>/tf-state.<repo>` | OCI repository for state storage |
+| `var-file` | `""` | Path to a `.tfvars` variable file |
+| `variables` | `""` | Newline-separated `key=value` variable pairs |
+| `comment-on-pr` | `true` | Post/update command output as a PR comment |
+| `add-summary` | `true` | Generate a GitHub Job Summary |
+
+### Backend Configuration
+
+Inputs for tuning the ORAS backend:
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `compression` | `gzip` | State compression: `none` or `gzip` |
+| `lock-ttl` | `300` | Lock TTL in seconds; `0` to disable |
+| `max-versions` | `10` | State versions to retain; `0` to disable |
+| `backend-config` | `""` | Newline-separated backend-config `key=value` pairs |
+
+### Advanced Inputs
+
+Additional configuration for specialized use cases:
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `workspace` | `default` | Terraform workspace name |
+| `args` | `""` | Additional CLI arguments appended to the command |
+| `init-args` | `""` | Additional arguments for `ghoten init` |
+| `auto-init` | `true` | Automatically run `ghoten init` before the command |
+| `fmt-check` | `false` | Use `-check` mode for `fmt` command (report only) |
+| `version` | (action version) | Ghoten version to install |
+| `github-token` | `${{ github.token }}` | GitHub token for GHCR authentication and PR comments |
+
+## Action Outputs
+
+Use outputs to control workflow logic:
+
+| Output | Description |
+|--------|-------------|
+| `exitcode` | Exit code of the ghoten command |
+| `stdout` | Full command output |
+| `plan-has-changes` | Whether plan detected infrastructure changes (`true`/`false`) |
+| `plan-file` | Absolute path to the binary plan file (when command=plan and changes exist) |
+| `fmt-result` | Whether fmt found formatting differences (`true`/`false`) |
+
+### Output Examples
+
+<CodeGroup>
+```yaml Plan with Changes
+steps:
+  - uses: vmvarela/ghoten@v1
+    id: plan
+    with:
+      command: plan
+
+  - name: Check for changes
+    run: |
+      if [ "${{ steps.plan.outputs.plan-has-changes }}" == "true" ]; then
+        echo "Infrastructure changes detected"
+      fi
+```
+
+```yaml Format Check
+steps:
+  - uses: vmvarela/ghoten@v1
+    id: fmt
+    with:
+      command: fmt
+      fmt-check: true
+
+  - name: Fail on formatting issues
+    if: steps.fmt.outputs.fmt-result == 'true'
+    run: |
+      echo "Code formatting issues found"
+      exit 1
+```
+
+```yaml Exit Code Handling
+steps:
+  - uses: vmvarela/ghoten@v1
+    id: validate
+    with:
+      command: validate
+    continue-on-error: true
+
+  - name: Handle validation failure
+    if: steps.validate.outputs.exitcode != '0'
+    run: |
+      echo "Validation failed with exit code ${{ steps.validate.outputs.exitcode }}"
+```
+</CodeGroup>
+
+## Permissions
+
+Required GitHub token permissions for different features:
+
+### Minimum Permissions
+
+```yaml
+permissions:
+  contents: read    # Checkout repository
+  packages: write   # Read/write GHCR state
+```
+
+### PR Comments Enabled
+
+```yaml
+permissions:
+  contents: read
+  packages: write
+  pull-requests: write  # Post PR comments
+```
+
+### Version Cleanup
+
+```yaml
+permissions:
+  contents: read
+  packages: write      # Includes delete when max-versions is set
+```
+
+<Warning>
+  If you use `max-versions` to clean up old state versions, ensure your organization's package permissions allow deletion.
+</Warning>
+
+## Variable Injection
+
+### Using tfvars Files
+
+```yaml
+steps:
+  - uses: actions/checkout@v6
+  - uses: vmvarela/ghoten@v1
+    with:
+      var-file: environments/production.tfvars
+```
+
+### Runtime Variables
+
+Inject variables dynamically in CI:
+
+```yaml
+steps:
+  - uses: actions/checkout@v6
+  - uses: vmvarela/ghoten@v1
+    with:
+      variables: |
+        environment=production
+        region=us-east-1
+        version=${{ github.sha }}
+```
+
+### Secrets as Variables
+
+```yaml
+steps:
+  - uses: actions/checkout@v6
+  - uses: vmvarela/ghoten@v1
+    with:
+      variables: |
+        api_key=${{ secrets.API_KEY }}
+        db_password=${{ secrets.DB_PASSWORD }}
+```
+
+## PR Comments and Summaries
+
+### Disable PR Comments
+
+For large repositories with many infrastructure changes:
+
+```yaml
+- uses: vmvarela/ghoten@v1
+  with:
+    comment-on-pr: false
+```
+
+### Disable Job Summaries
+
+If you publish custom summaries:
+
+```yaml
+- uses: vmvarela/ghoten@v1
+  with:
+    add-summary: false
+```
+
+### Custom Summary
+
+Combine outputs with custom summaries:
+
+```yaml
+steps:
+  - uses: vmvarela/ghoten@v1
+    id: plan
+    with:
+      add-summary: false
+  
+  - name: Custom Summary
+    run: |
+      echo "## Infrastructure Plan" >> $GITHUB_STEP_SUMMARY
+      echo "Changes detected: ${{ steps.plan.outputs.plan-has-changes }}" >> $GITHUB_STEP_SUMMARY
+      echo '```' >> $GITHUB_STEP_SUMMARY
+      echo "${{ steps.plan.outputs.stdout }}" >> $GITHUB_STEP_SUMMARY
+      echo '```' >> $GITHUB_STEP_SUMMARY
+```
+
+## Troubleshooting
+
+### Authentication Failures
+
+Ensure your workflow has the correct permissions:
+
+```yaml
+permissions:
+  packages: write  # Required for GHCR
+```
+
+### Backend Repository Not Found
+
+Explicitly set the backend repository if the default doesn't match your setup:
+
+```yaml
+- uses: vmvarela/ghoten@v1
+  with:
+    backend-repository: ghcr.io/myorg/custom-state-repo
+```
+
+### Init Failures
+
+Add debug logging by setting the `init-args`:
+
+```yaml
+- uses: vmvarela/ghoten@v1
+  with:
+    init-args: "-no-color"
+  env:
+    TF_LOG: DEBUG
+```
+
+### Version Pinning
+
+Pin to a specific Ghoten version for reproducible builds:
+
+```yaml
+- uses: vmvarela/ghoten@v1
+  with:
+    version: v1.8.5
+```

@@ -1,0 +1,447 @@
+---
+title: Environment Variables
+description: Complete reference for all ORAS backend environment variables
+---
+
+The ORAS backend supports environment variables for most configuration parameters. This allows you to configure the backend without hardcoding sensitive values or to override configuration dynamically.
+
+## Overview
+
+Environment variables provide flexibility for:
+- **CI/CD pipelines**: Configure backends dynamically per environment
+- **Security**: Keep sensitive values out of version control
+- **Development**: Override configuration locally without modifying code
+- **Multi-environment**: Use the same configuration with different repositories
+
+<Info>
+When both an environment variable and explicit configuration are provided, the explicit configuration takes precedence.
+</Info>
+
+## Repository Configuration
+
+### TF_BACKEND_ORAS_REPOSITORY
+
+<ParamField path="TF_BACKEND_ORAS_REPOSITORY" type="string" required>
+  OCI repository in the form `<registry>/<repository>`, without tag or digest.
+  
+  **Equivalent Parameter:** `repository`
+  
+  **Example:**
+  ```bash
+  export TF_BACKEND_ORAS_REPOSITORY="ghcr.io/myorg/terraform-state"
+  ghoten plan
+  ```
+  
+  **Use Cases:**
+  - Different repositories per environment (dev/staging/prod)
+  - CI/CD pipelines with dynamic repository paths
+  - Multi-tenant configurations
+  
+  **Example Configuration:**
+  ```hcl
+  terraform {
+    backend "oras" {
+      # repository is read from TF_BACKEND_ORAS_REPOSITORY
+      compression = "gzip"
+    }
+  }
+  ```
+</ParamField>
+
+## Retry Configuration
+
+### TF_BACKEND_ORAS_RETRY_MAX
+
+<ParamField path="TF_BACKEND_ORAS_RETRY_MAX" type="int" default="2">
+  The number of retries for transient registry requests.
+  
+  **Equivalent Parameter:** `retry_max`
+  
+  **Example:**
+  ```bash
+  export TF_BACKEND_ORAS_RETRY_MAX=5
+  ghoten apply
+  ```
+  
+  **Use Cases:**
+  - Increase retries in unreliable network environments
+  - CI/CD pipelines with flaky registry connections
+  - Reduce retries for faster failures in development
+</ParamField>
+
+### TF_BACKEND_ORAS_RETRY_WAIT_MIN
+
+<ParamField path="TF_BACKEND_ORAS_RETRY_WAIT_MIN" type="int" default="1">
+  The minimum time in seconds to wait between transient registry request attempts.
+  
+  **Equivalent Parameter:** `retry_wait_min`
+  
+  **Example:**
+  ```bash
+  export TF_BACKEND_ORAS_RETRY_WAIT_MIN=2
+  ghoten apply
+  ```
+  
+  **Use Cases:**
+  - Adjust retry timing for different registry behaviors
+  - Optimize for registries with specific rate limiting patterns
+</ParamField>
+
+### TF_BACKEND_ORAS_RETRY_WAIT_MAX
+
+<ParamField path="TF_BACKEND_ORAS_RETRY_WAIT_MAX" type="int" default="30">
+  The maximum time in seconds to wait between transient registry request attempts.
+  
+  **Equivalent Parameter:** `retry_wait_max`
+  
+  **Example:**
+  ```bash
+  export TF_BACKEND_ORAS_RETRY_WAIT_MAX=60
+  ghoten apply
+  ```
+  
+  <Info>
+    With exponential backoff (2x multiplier), the actual wait times are: `retry_wait_min`, `retry_wait_min * 2`, `retry_wait_min * 4`, etc., capped at `retry_wait_max`.
+  </Info>
+</ParamField>
+
+## Locking
+
+### TF_BACKEND_ORAS_LOCK_TTL
+
+<ParamField path="TF_BACKEND_ORAS_LOCK_TTL" type="int" default="0">
+  Lock TTL in seconds. When greater than 0, stale locks older than this are automatically cleared during lock acquisition.
+  
+  **Equivalent Parameter:** `lock_ttl`
+  
+  **Example:**
+  ```bash
+  export TF_BACKEND_ORAS_LOCK_TTL=300  # 5 minutes
+  ghoten apply
+  ```
+  
+  **Use Cases:**
+  - Enable automatic stale lock cleanup in CI/CD without modifying configuration
+  - Override lock TTL for specific operations
+  - Different TTL values per environment (shorter in dev, longer in prod)
+  
+  **CI/CD Example:**
+  ```yaml
+  # GitHub Actions
+  - name: Terraform Apply
+    env:
+      TF_BACKEND_ORAS_LOCK_TTL: 600  # 10 minutes
+    run: ghoten apply -auto-approve
+  ```
+</ParamField>
+
+## Rate Limiting
+
+### TF_BACKEND_ORAS_RATE_LIMIT
+
+<ParamField path="TF_BACKEND_ORAS_RATE_LIMIT" type="int" default="0">
+  Maximum registry requests per second. 0 disables rate limiting.
+  
+  **Equivalent Parameter:** `rate_limit`
+  
+  **Example:**
+  ```bash
+  export TF_BACKEND_ORAS_RATE_LIMIT=10
+  ghoten apply
+  ```
+  
+  **Use Cases:**
+  - Comply with registry rate limits dynamically
+  - Different limits for different CI/CD runners
+  - Override limits for emergency operations
+</ParamField>
+
+### TF_BACKEND_ORAS_RATE_LIMIT_BURST
+
+<ParamField path="TF_BACKEND_ORAS_RATE_LIMIT_BURST" type="int" default="0">
+  Maximum burst size for registry requests when rate limiting is enabled. 0 defaults to 1.
+  
+  **Equivalent Parameter:** `rate_limit_burst`
+  
+  **Example:**
+  ```bash
+  export TF_BACKEND_ORAS_RATE_LIMIT=5
+  export TF_BACKEND_ORAS_RATE_LIMIT_BURST=15
+  ghoten apply
+  ```
+  
+  <Tip>
+    Set burst to 2-3x the rate limit to allow short bursts while maintaining average rate control.
+  </Tip>
+</ParamField>
+
+## Usage Examples
+
+### Multi-Environment Setup
+
+Use environment variables to configure different backends per environment:
+
+**Terraform Configuration:**
+```hcl
+terraform {
+  backend "oras" {
+    # All parameters configured via environment variables
+  }
+}
+```
+
+**Development Environment:**
+```bash
+export TF_BACKEND_ORAS_REPOSITORY="ghcr.io/myorg/state-dev"
+export TF_BACKEND_ORAS_LOCK_TTL=120
+ghoten apply
+```
+
+**Production Environment:**
+```bash
+export TF_BACKEND_ORAS_REPOSITORY="ghcr.io/myorg/state-prod"
+export TF_BACKEND_ORAS_LOCK_TTL=600
+export TF_BACKEND_ORAS_MAX_VERSIONS=30
+ghoten apply
+```
+
+### CI/CD Pipeline Configuration
+
+**GitHub Actions:**
+```yaml
+name: Terraform Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Configure Backend
+        env:
+          TF_BACKEND_ORAS_REPOSITORY: ghcr.io/${{ github.repository }}/state
+          TF_BACKEND_ORAS_RETRY_MAX: 5
+          TF_BACKEND_ORAS_LOCK_TTL: 300
+          TF_BACKEND_ORAS_RATE_LIMIT: 10
+        run: |
+          docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+          ghoten apply -auto-approve
+```
+
+**GitLab CI:**
+```yaml
+terraform:apply:
+  stage: deploy
+  variables:
+    TF_BACKEND_ORAS_REPOSITORY: "registry.gitlab.com/${CI_PROJECT_PATH}/state"
+    TF_BACKEND_ORAS_RETRY_MAX: "5"
+    TF_BACKEND_ORAS_LOCK_TTL: "300"
+  script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - ghoten apply -auto-approve
+```
+
+### Hybrid Configuration
+
+Combine static configuration with environment variable overrides:
+
+**Terraform Configuration:**
+```hcl
+terraform {
+  backend "oras" {
+    # Static configuration
+    compression  = "gzip"
+    max_versions = 10
+    retry_max    = 3
+    
+    # Dynamic configuration via environment
+    # repository is set by TF_BACKEND_ORAS_REPOSITORY
+    # lock_ttl is set by TF_BACKEND_ORAS_LOCK_TTL
+  }
+}
+```
+
+**Runtime:**
+```bash
+export TF_BACKEND_ORAS_REPOSITORY="ghcr.io/myorg/state-${ENV}"
+export TF_BACKEND_ORAS_LOCK_TTL=300
+ghoten apply
+```
+
+### Development Overrides
+
+Developers can override configuration locally without modifying code:
+
+**Project Configuration:**
+```hcl
+terraform {
+  backend "oras" {
+    repository   = "ghcr.io/myorg/state-shared"
+    lock_ttl     = 300
+    max_versions = 10
+  }
+}
+```
+
+**Developer Override:**
+```bash
+# Use personal repository for testing
+export TF_BACKEND_ORAS_REPOSITORY="ghcr.io/myuser/state-testing"
+export TF_BACKEND_ORAS_LOCK_TTL=60  # Shorter lock TTL for dev
+ghoten plan
+```
+
+### Emergency Operations
+
+Quickly adjust retry and rate limiting for emergency operations:
+
+```bash
+# Aggressive retries for unstable registry
+export TF_BACKEND_ORAS_RETRY_MAX=10
+export TF_BACKEND_ORAS_RETRY_WAIT_MAX=120
+
+# Disable rate limiting for urgent recovery
+export TF_BACKEND_ORAS_RATE_LIMIT=0
+
+ghoten apply -auto-approve
+```
+
+## Environment Variable Precedence
+
+When configuration is provided in multiple places, the precedence order is:
+
+1. **Explicit HCL configuration** (highest priority)
+2. **Environment variables**
+3. **Default values** (lowest priority)
+
+**Example:**
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/state"  # Takes precedence
+    retry_max  = 5                      # Takes precedence
+    # lock_ttl not specified, uses TF_BACKEND_ORAS_LOCK_TTL if set
+  }
+}
+```
+
+```bash
+export TF_BACKEND_ORAS_REPOSITORY="ghcr.io/other/state"  # Ignored
+export TF_BACKEND_ORAS_RETRY_MAX=3                       # Ignored
+export TF_BACKEND_ORAS_LOCK_TTL=300                      # Used
+```
+
+## Best Practices
+
+### Security
+
+<Warning>
+Never commit environment variables with sensitive values to version control. Use CI/CD secrets or secure vaults instead.
+</Warning>
+
+**Good Practices:**
+- Use CI/CD secret management for sensitive variables
+- Use `.env` files locally (add to `.gitignore`)
+- Use tools like `direnv` for project-specific environments
+
+### Validation
+
+Always validate environment variables are set before running Terraform:
+
+```bash
+#!/bin/bash
+set -e
+
+required_vars=(
+  "TF_BACKEND_ORAS_REPOSITORY"
+)
+
+for var in "${required_vars[@]}"; do
+  if [ -z "${!var}" ]; then
+    echo "Error: $var is not set"
+    exit 1
+  fi
+done
+
+ghoten apply -auto-approve
+```
+
+### Documentation
+
+Document which environment variables are expected in your project:
+
+**Example `.env.example`:**
+```bash
+# ORAS Backend Configuration
+TF_BACKEND_ORAS_REPOSITORY=ghcr.io/myorg/state-${ENVIRONMENT}
+TF_BACKEND_ORAS_LOCK_TTL=300
+TF_BACKEND_ORAS_RETRY_MAX=3
+
+# Optional: Rate limiting
+# TF_BACKEND_ORAS_RATE_LIMIT=10
+# TF_BACKEND_ORAS_RATE_LIMIT_BURST=20
+```
+
+## Parameters Without Environment Variables
+
+The following parameters cannot be set via environment variables and must be configured in HCL:
+
+- `insecure` - TLS verification control
+- `ca_file` - Custom CA certificate bundle path
+- `compression` - Compression algorithm
+- `max_versions` - State version retention
+
+This is intentional to ensure critical security and behavior settings are explicitly declared in version-controlled configuration.
+
+## Troubleshooting
+
+### Variable Not Taking Effect
+
+**Problem:** Environment variable appears to be ignored
+
+**Solution:**
+1. Check if the parameter is explicitly set in HCL (takes precedence)
+2. Verify the variable name is correct (case-sensitive)
+3. Ensure the variable is exported: `export VAR=value`
+4. Check variable value: `echo $TF_BACKEND_ORAS_REPOSITORY`
+
+### Type Conversion Errors
+
+**Problem:** Integer values not being parsed correctly
+
+**Solution:** Ensure integer variables are set as numbers without quotes in shell:
+```bash
+# Correct
+export TF_BACKEND_ORAS_RETRY_MAX=5
+
+# Also works (quotes are removed by shell)
+export TF_BACKEND_ORAS_RETRY_MAX="5"
+```
+
+### Missing Required Variables
+
+**Problem:** Backend fails to initialize with empty repository
+
+**Solution:** Ensure `repository` is set either in HCL or via `TF_BACKEND_ORAS_REPOSITORY`:
+```bash
+if [ -z "$TF_BACKEND_ORAS_REPOSITORY" ]; then
+  echo "Error: TF_BACKEND_ORAS_REPOSITORY must be set"
+  exit 1
+fi
+```
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="Backend Configuration" icon="gear" href="/reference/backend-config">
+    Complete guide to configuring the ORAS backend
+  </Card>
+  <Card title="Backend Parameters" icon="sliders" href="/reference/backend-parameters">
+    Detailed reference for all configuration parameters
+  </Card>
+</CardGroup>

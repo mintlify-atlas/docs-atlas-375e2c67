@@ -1,0 +1,177 @@
+---
+title: Testing
+description: How to run tests in Ghoten
+---
+
+## What is this?
+
+This guide shows the shortest path to confidence when changing Ghoten: run fast unit tests first, then targeted backend/integration tests only when your change needs them.
+
+That order is intentional. Full integration sweeps are expensive; most regressions are caught earlier with package-level tests.
+
+## Fast feedback loop
+
+Start here for almost every change:
+
+```bash
+go test -v ./...
+```
+
+If you are changing ORAS backend behavior, run its focused suite directly:
+
+```bash
+go test ./internal/backend/remote-state/oras/...
+```
+
+## Coverage run
+
+Use this when validating broad impact before release:
+
+<Steps>
+  <Step title="Run coverage tests">
+    ```bash
+    make test-with-coverage
+    ```
+    
+    This generates `coverage.out` and `coverage.html` at the repository root.
+  </Step>
+  
+  <Step title="View coverage report">
+    Open `coverage.html` in your browser to view detailed coverage information.
+  </Step>
+</Steps>
+
+## Integration test targets
+
+Use integration tests only when touching backend-specific runtime behavior.
+
+| Target | What it validates | Key requirement |
+|---|---|---|
+| `make test-s3` | S3 remote-state backend behavior | AWS credentials + IAM permissions |
+| `make test-gcp` | GCS remote-state backend behavior | GCP ADC + project/region env vars |
+| `make test-pg` | PostgreSQL remote-state backend behavior | Docker + local port `5432` |
+| `make test-consul` | Consul remote-state backend behavior | Docker |
+| `make test-kubernetes` | Kubernetes backend behavior | Docker + kind prerequisites |
+
+### Running specific integration tests
+
+<Tabs>
+  <Tab title="S3 Backend">
+    ```bash
+    make test-s3
+    ```
+    
+    **Requirements:**
+    - AWS Credentials configured ([docs](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html))
+    - IAM Permissions in us-west-2:
+      - S3 CRUD operations on buckets following pattern `tofu-test-*`
+      - DynamoDB CRUD operations on table `dynamoTable`
+  </Tab>
+  
+  <Tab title="GCP Backend">
+    ```bash
+    make test-gcp
+    ```
+    
+    **Requirements:**
+    - Configure default credentials: `gcloud auth application-default login`
+    - Set environment variables:
+      - `GOOGLE_REGION` - valid GCP region (e.g., us-west1)
+      - `GOOGLE_PROJECT` - valid GCP project ID
+    
+    <Note>
+      The GCP tests leave behind a keyring (cannot be easily deleted). It will be reused across test runs.
+    </Note>
+  </Tab>
+  
+  <Tab title="PostgreSQL Backend">
+    ```bash
+    make test-pg
+    ```
+    
+    **Requirements:**
+    - Docker installed
+    - Port 5432 available
+    
+    Clean up after testing:
+    ```bash
+    make test-pg-clean
+    ```
+  </Tab>
+  
+  <Tab title="Consul Backend">
+    ```bash
+    make test-consul
+    ```
+    
+    **Requirements:**
+    - Docker installed
+    
+    Clean up after testing:
+    ```bash
+    make test-consul-clean
+    ```
+  </Tab>
+  
+  <Tab title="Kubernetes Backend">
+    ```bash
+    make test-kubernetes
+    ```
+    
+    **Requirements:**
+    - Git client
+    - Docker installed
+    - Docker configurations satisfy [KinD requirements](https://kind.sigs.k8s.io/docs/user/quick-start#settings-for-docker-desktop)
+    
+    Cleanup is handled automatically, but you can run manually:
+    ```bash
+    make test-kubernetes-clean
+    ```
+  </Tab>
+</Tabs>
+
+### List all integration tests
+
+```bash
+make list-integration-tests
+```
+
+### Run all integration tests
+
+```bash
+make integration-tests
+```
+
+Clean up after all integration tests:
+
+```bash
+make integration-tests-clean
+```
+
+## Recommended workflow
+
+<Steps>
+  <Step title="Run all unit tests">
+    ```bash
+    go test -v ./...
+    ```
+  </Step>
+  
+  <Step title="Run focused package test">
+    Run tests for the specific area you changed:
+    
+    ```bash
+    go test ./internal/backend/remote-state/oras/...
+    ```
+  </Step>
+  
+  <Step title="Run integration test (if needed)">
+    Run one integration target only if your change touches that backend:
+    
+    ```bash
+    make test-s3
+    ```
+  </Step>
+</Steps>
+
+This keeps CI time and local feedback fast without skipping meaningful validation.

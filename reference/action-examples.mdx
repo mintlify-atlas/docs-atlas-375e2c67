@@ -1,0 +1,263 @@
+---
+title: Action Examples
+description: Real-world workflow examples for the Ghoten GitHub Action
+---
+
+These examples show common patterns for using the Ghoten GitHub Action in your CI/CD workflows.
+
+## Minimal PR Plan Workflow
+
+Use this when you want plan output in pull requests with almost no setup:
+
+```yaml
+name: Infra Plan
+on: pull_request
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: vmvarela/ghoten@v1
+```
+
+This defaults to `command: plan`, posts a PR comment, and writes a Job Summary.
+
+<Note>
+  The action requires `packages: write` permission to read/write state from GHCR, and `pull-requests: write` to post comments.
+</Note>
+
+## Plan on PR, Apply on Main
+
+Use this split when you want safe review before mutation:
+
+```yaml
+name: Infrastructure
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write, pull-requests: write }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: vmvarela/ghoten@v1
+
+  apply:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: vmvarela/ghoten@v1
+        with:
+          command: apply
+```
+
+<Warning>
+  The `apply` job does not need `pull-requests: write` permission since it only runs on the main branch.
+</Warning>
+
+## Conditional Apply Based on Plan Changes
+
+Use action outputs to gate later steps and only apply when changes are detected:
+
+```yaml
+name: Smart Apply
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      
+      - uses: vmvarela/ghoten@v1
+        id: plan
+        with:
+          command: plan
+      
+      - uses: vmvarela/ghoten@v1
+        if: steps.plan.outputs.plan-has-changes == 'true'
+        with:
+          command: apply
+      
+      - name: No changes detected
+        if: steps.plan.outputs.plan-has-changes == 'false'
+        run: echo "No infrastructure changes detected"
+```
+
+This pattern avoids unnecessary apply operations when infrastructure is already in sync.
+
+## Monorepo with Multiple Environments
+
+Manage multiple infrastructure directories in a single repository:
+
+```yaml
+name: Multi-Environment
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  dev:
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write, pull-requests: write }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: vmvarela/ghoten@v1
+        with:
+          command: ${{ github.event_name == 'pull_request' && 'plan' || 'apply' }}
+          working-directory: environments/dev
+          workspace: dev
+          var-file: environments/dev/terraform.tfvars
+  
+  staging:
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write, pull-requests: write }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: vmvarela/ghoten@v1
+        with:
+          command: ${{ github.event_name == 'pull_request' && 'plan' || 'apply' }}
+          working-directory: environments/staging
+          workspace: staging
+          var-file: environments/staging/terraform.tfvars
+  
+  production:
+    if: github.ref == 'refs/heads/main'
+    needs: [dev, staging]
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: vmvarela/ghoten@v1
+        with:
+          command: apply
+          working-directory: environments/production
+          workspace: production
+          var-file: environments/production/terraform.tfvars
+```
+
+## Format Validation in CI
+
+Enforce formatting standards in pull requests:
+
+```yaml
+name: Format Check
+on: pull_request
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      
+      - uses: vmvarela/ghoten@v1
+        id: fmt
+        with:
+          command: fmt
+          fmt-check: true
+      
+      - name: Fail if formatting needed
+        if: steps.fmt.outputs.fmt-result == 'true'
+        run: |
+          echo "❌ Files need formatting. Run 'tofu fmt' locally and commit the changes."
+          exit 1
+```
+
+<Tip>
+  Set `fmt-check: true` to prevent the action from rewriting files. This is useful for CI validation where you want to enforce formatting without modifying the repository.
+</Tip>
+
+## Custom Variables and Backend
+
+Inject runtime variables and use a custom backend repository:
+
+```yaml
+name: Custom Configuration
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      
+      - uses: vmvarela/ghoten@v1
+        with:
+          command: apply
+          backend-repository: ghcr.io/myorg/shared-tf-state
+          variables: |
+            environment=production
+            region=us-east-1
+            replica_count=3
+          backend-config: |
+            encryption=true
+```
+
+## Validate Configuration
+
+Validate Terraform/OpenTofu configuration without planning or applying:
+
+```yaml
+name: Validate
+on: [pull_request, push]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      
+      - uses: vmvarela/ghoten@v1
+        with:
+          command: validate
+```
+
+## Permissions Checklist
+
+Ensure your workflows have the correct permissions:
+
+<ParamField path="contents: read" type="permission" required>
+  Required for `actions/checkout` to clone the repository
+</ParamField>
+
+<ParamField path="packages: write" type="permission" required>
+  Required for GHCR state read/write/delete operations
+</ParamField>
+
+<ParamField path="pull-requests: write" type="permission">
+  Optional - only needed if `comment-on-pr: true` (the default)
+  
+  Allows the action to post plan/apply results as PR comments
+</ParamField>
+
+<Warning>
+  If you enable aggressive retention/deletion workflows, ensure the token has enough package permissions in your organization policy.
+</Warning>

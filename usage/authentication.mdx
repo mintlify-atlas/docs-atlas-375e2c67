@@ -1,0 +1,190 @@
+---
+title: Authentication
+description: Authenticate to OCI registries using Docker login or credential helpers
+---
+
+Ghoten uses standard OCI registry authentication methods to access your state repository. Authentication is required before you can initialize or use the ORAS backend.
+
+## Authentication Methods
+
+Ghoten resolves credentials in the following order:
+
+1. **Docker credential helpers** - From `docker login` or Docker credential stores
+2. **CLI host credentials** - From `ghoten login` or Terraform-style host tokens
+
+<Tip>
+  If authentication fails, running `docker login <registry>` first fixes most cases faster than debugging backend configuration.
+</Tip>
+
+## Docker Login
+
+The most common and straightforward authentication method is using Docker's credential system.
+
+### GitHub Container Registry (GHCR)
+
+<Steps>
+  <Step title="Create a GitHub Personal Access Token">
+    Generate a token with these scopes:
+    - `read:packages` - Read container images and artifacts
+    - `write:packages` - Push container images and artifacts
+    - `delete:packages` - Delete packages (required for version cleanup)
+  </Step>
+
+  <Step title="Login to GHCR">
+    ```bash
+    echo "$GITHUB_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin
+    ```
+  </Step>
+
+  <Step title="Verify authentication">
+    ```bash
+    ./ghoten init
+    ```
+  </Step>
+</Steps>
+
+### Other OCI Registries
+
+For other OCI-compliant registries (Docker Hub, Amazon ECR, Azure ACR, etc.):
+
+```bash
+docker login <registry-url> -u <username> -p <password>
+```
+
+## GitHub Actions Authentication
+
+The Ghoten GitHub Action handles authentication automatically using the built-in `GITHUB_TOKEN`:
+
+```yaml
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write  # Required for GHCR access
+    steps:
+      - uses: actions/checkout@v6
+      - uses: vmvarela/ghoten@v1
+```
+
+The action automatically runs the equivalent of:
+
+```bash
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+```
+
+<Warning>
+  Ensure your workflow has `packages: write` permission. Without it, Ghoten cannot read or write state to GHCR.
+</Warning>
+
+## Credential Helpers
+
+Docker credential helpers provide secure storage for registry credentials across platforms.
+
+### macOS (Keychain)
+
+Credentials are stored in macOS Keychain automatically when you use `docker login`.
+
+### Linux (Pass)
+
+Configure Docker to use the `pass` credential helper:
+
+<Steps>
+  <Step title="Install pass and docker-credential-pass">
+    ```bash
+    # Debian/Ubuntu
+    sudo apt-get install pass docker-credential-pass
+    
+    # Fedora/RHEL
+    sudo dnf install pass docker-credential-pass
+    ```
+  </Step>
+
+  <Step title="Configure Docker">
+    Edit `~/.docker/config.json`:
+
+    ```json
+    {
+      "credsStore": "pass"
+    }
+    ```
+  </Step>
+
+  <Step title="Initialize pass">
+    ```bash
+    gpg --generate-key
+    pass init <gpg-id>
+    ```
+  </Step>
+</Steps>
+
+### Windows (wincred)
+
+Credentials are stored in Windows Credential Manager automatically when you use `docker login`.
+
+## Required Permissions
+
+Different operations require different registry permissions:
+
+| Operation | Required Permission |
+|-----------|--------------------|
+| Read state | `read:packages` or equivalent |
+| Write state | `write:packages` or equivalent |
+| Lock state | `write:packages` or equivalent |
+| Delete old versions | `delete:packages` or equivalent |
+
+<Note>
+  For GHCR specifically, the `delete:packages` scope is required if you use the `max_versions` backend parameter to clean up old state versions.
+</Note>
+
+## Troubleshooting
+
+### Unauthorized Errors
+
+If you encounter `unauthorized` or `denied` errors:
+
+1. **Re-run docker login** with the correct credentials
+2. **Verify token scopes** include `read:packages` and `write:packages`
+3. **Check repository permissions** - ensure your user/token has access to the repository
+4. **Enable debug logging** to see authentication details:
+
+   ```bash
+   TF_LOG=DEBUG ./ghoten init
+   ```
+
+### GHCR Package Permissions
+
+For GitHub Container Registry:
+
+1. Repository packages inherit permissions from the repository by default
+2. You can configure package visibility (public/private) independently
+3. For organization repositories, ensure your token has organization access
+4. For version deletion, the token must have `delete:packages` scope
+
+### Credential Store Issues
+
+If credentials aren't being persisted:
+
+1. Check `~/.docker/config.json` for credential helper configuration
+2. Verify the credential helper binary is in your `PATH`
+3. Try removing `credsStore` from config and use `docker login` again
+
+## Security Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Use Short-lived Tokens">
+    Generate tokens with expiration dates and rotate them regularly.
+  </Card>
+  
+  <Card title="Minimum Permissions">
+    Grant only the permissions needed for your specific use case.
+  </Card>
+  
+  <Card title="Separate CI/CD Tokens">
+    Use different tokens for CI/CD vs. local development.
+  </Card>
+  
+  <Card title="Credential Helpers">
+    Use platform credential helpers instead of storing tokens in plain text.
+  </Card>
+</CardGroup>

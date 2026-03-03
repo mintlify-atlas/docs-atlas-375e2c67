@@ -1,0 +1,77 @@
+---
+title: Installation
+description: Install Ghoten using build from source or Docker image
+---
+
+Ghoten is available through two primary installation methods: building from source or using the official Docker image.
+
+## Build from Source
+
+Building Ghoten from source is the recommended method for local development and provides the most flexibility.
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/vmvarela/ghoten.git
+    ```
+  </Step>
+
+  <Step title="Navigate to the directory">
+    ```bash
+    cd ghoten
+    ```
+  </Step>
+
+  <Step title="Build the binary">
+    ```bash
+    make build
+    ```
+  </Step>
+
+  <Step title="Verify the installation">
+    ```bash
+    ./ghoten version
+    ```
+  </Step>
+</Steps>
+
+## Docker Image
+
+For CI environments or reproducible local setups, use the official Docker image published to GitHub Container Registry.
+
+<Steps>
+  <Step title="Pull the image">
+    Replace `<version>` with your desired version (e.g., `v1.0.0`):
+
+    ```bash
+    docker pull ghcr.io/vmvarela/ghoten:<version>
+    ```
+  </Step>
+
+  <Step title="Run Ghoten commands">
+    You can run Ghoten commands directly through Docker:
+
+    ```bash
+    docker run --rm ghcr.io/vmvarela/ghoten:<version> version
+    ```
+  </Step>
+
+  <Step title="Mount your configuration">
+    To use Ghoten with your Terraform/OpenTofu configurations, mount your working directory:
+
+    ```bash
+    docker run --rm -v $(pwd):/workspace -w /workspace \
+      ghcr.io/vmvarela/ghoten:<version> init
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  The Docker image is based on Alpine Linux and includes `git`, `bash`, and `openssh` for common infrastructure-as-code workflows.
+</Note>
+
+## Next Steps
+
+After installation, proceed to:
+- [Configuration](/usage/configuration) - Set up the ORAS backend
+- [Authentication](/usage/authentication) - Configure registry authentication

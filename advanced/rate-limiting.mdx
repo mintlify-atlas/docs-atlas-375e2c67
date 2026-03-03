@@ -1,0 +1,282 @@
+---
+title: Rate Limiting
+description: Configure client-side rate limiting to prevent registry throttling
+---
+
+The ORAS backend includes built-in client-side rate limiting to help you avoid overwhelming your OCI registry with requests. This is especially useful when working with registries that have strict rate limits or when running automated pipelines.
+
+## Configuration Parameters
+
+Rate limiting is controlled by two parameters:
+
+- **`rate_limit`** - Maximum requests per second (default: `0`, disabled)
+- **`rate_limit_burst`** - Maximum burst size for token bucket (default: `0`, which becomes `1` when rate limiting is enabled)
+
+## Basic Configuration
+
+Enable rate limiting by setting `rate_limit` to a positive integer:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository  = "ghcr.io/myorg/infra-state"
+    rate_limit  = 10  # 10 requests per second
+  }
+}
+```
+
+### Environment Variables
+
+You can also configure rate limiting via environment variables:
+
+```bash
+export TF_BACKEND_ORAS_RATE_LIMIT=10
+export TF_BACKEND_ORAS_RATE_LIMIT_BURST=20
+```
+
+## Token Bucket Algorithm
+
+The backend uses a token bucket rate limiter:
+
+- Tokens are added to the bucket at a rate of `rate_limit` per second
+- Each registry request consumes one token
+- The bucket can hold up to `rate_limit_burst` tokens
+- If the bucket is empty, requests wait until a token becomes available
+
+### Burst Capacity
+
+The `rate_limit_burst` parameter allows short bursts of requests:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository        = "ghcr.io/myorg/infra-state"
+    rate_limit        = 5   # 5 requests per second sustained
+    rate_limit_burst  = 20  # Allow bursts up to 20 requests
+  }
+}
+```
+
+<Note>
+If `rate_limit_burst` is `0` (default), it automatically becomes `1` when rate limiting is enabled. This prevents deadlocks while still enforcing the rate limit.
+</Note>
+
+## When to Use Rate Limiting
+
+### Recommended Use Cases
+
+**CI/CD Pipelines**: Prevent multiple concurrent jobs from overwhelming the registry:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository       = "ghcr.io/myorg/ci-state"
+    rate_limit       = 10
+    rate_limit_burst = 30
+  }
+}
+```
+
+**Shared Registries**: When multiple teams share a registry with rate limits:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository       = "ghcr.io/shared/team-state"
+    rate_limit       = 5
+    rate_limit_burst = 15
+  }
+}
+```
+
+**Free Tier Registries**: Comply with free tier rate limits (e.g., Docker Hub free tier):
+
+```hcl
+terraform {
+  backend "oras" {
+    repository       = "docker.io/myuser/state"
+    rate_limit       = 3
+    rate_limit_burst = 10
+  }
+}
+```
+
+## Registry-Specific Recommendations
+
+### GitHub Container Registry (GHCR)
+
+GHCR has generous rate limits for authenticated users. Rate limiting is typically not needed:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/infra-state"
+    # rate_limit not set - GHCR handles high request rates
+  }
+}
+```
+
+### Docker Hub
+
+Docker Hub has stricter rate limits, especially for unauthenticated users:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository       = "docker.io/myorg/state"
+    rate_limit       = 5
+    rate_limit_burst = 20
+  }
+}
+```
+
+### Private Registries
+
+Consult your registry's documentation for rate limit policies. For example, if your registry allows 100 requests per minute:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository       = "registry.example.com/myorg/state"
+    rate_limit       = 1    # ~60 requests per minute
+    rate_limit_burst = 10   # Allow initial burst
+  }
+}
+```
+
+## Interaction with Retry Configuration
+
+Rate limiting works alongside retry configuration:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository       = "ghcr.io/myorg/infra-state"
+    rate_limit       = 10
+    rate_limit_burst = 20
+    retry_max        = 3
+    retry_wait_min   = 1
+    retry_wait_max   = 30
+  }
+}
+```
+
+<Note>
+Rate limiting happens before requests are sent, while retries happen after failed requests. This means rate limiting can help prevent `429 Too Many Requests` errors that would otherwise trigger retries.
+</Note>
+
+## Performance Considerations
+
+### Impact on Operation Speed
+
+Rate limiting can slow down state operations if set too conservatively:
+
+- **Low limits** (1-3 req/sec): Suitable for free tier registries, but may slow down large plan/apply operations
+- **Medium limits** (5-10 req/sec): Good balance for most use cases
+- **High limits** (20+ req/sec): Minimal impact on performance, mainly for burst protection
+
+### Disabling Rate Limiting
+
+To disable rate limiting, set `rate_limit` to `0` (default):
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/infra-state"
+    rate_limit = 0  # Disabled
+  }
+}
+```
+
+## Monitoring and Tuning
+
+If you're experiencing rate limit errors from your registry:
+
+1. Check your registry's rate limit policy
+2. Enable rate limiting with a conservative value
+3. Monitor operation duration
+4. Gradually increase limits if operations are too slow
+
+### Example: Tuning for CI/CD
+
+```hcl
+# Start conservative
+terraform {
+  backend "oras" {
+    repository       = "ghcr.io/myorg/ci-state"
+    rate_limit       = 5
+    rate_limit_burst = 10
+  }
+}
+
+# If no rate limit errors, increase for better performance
+terraform {
+  backend "oras" {
+    repository       = "ghcr.io/myorg/ci-state"
+    rate_limit       = 15
+    rate_limit_burst = 30
+  }
+}
+```
+
+## Troubleshooting
+
+### Error: Rate limit must be non-negative
+
+```
+Error: rate_limit must be non-negative
+```
+
+**Solution**: Ensure `rate_limit` is set to `0` or a positive integer.
+
+### Error: Rate limit burst must be non-negative
+
+```
+Error: rate_limit_burst must be non-negative
+```
+
+**Solution**: Ensure `rate_limit_burst` is set to `0` or a positive integer.
+
+### Slow State Operations
+
+If state operations are taking too long:
+
+1. Check if rate limiting is enabled and set too low
+2. Increase `rate_limit` or `rate_limit_burst`
+3. Disable rate limiting if your registry can handle the load
+
+<Warning>
+Setting rate limits too high can still result in `429 Too Many Requests` errors from the registry. Start conservatively and increase gradually.
+</Warning>
+
+## Example Configurations
+
+### Minimal rate limiting
+
+```hcl
+terraform {
+  backend "oras" {
+    repository       = "ghcr.io/myorg/state"
+    rate_limit       = 10
+    rate_limit_burst = 20
+  }
+}
+```
+
+### Production with comprehensive configuration
+
+```hcl
+terraform {
+  backend "oras" {
+    repository         = "ghcr.io/myorg/prod-state"
+    compression        = "gzip"
+    rate_limit         = 15
+    rate_limit_burst   = 30
+    retry_max          = 3
+    retry_wait_min     = 1
+    retry_wait_max     = 30
+    lock_ttl           = 300
+    max_versions       = 10
+  }
+}
+```

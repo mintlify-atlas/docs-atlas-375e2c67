@@ -1,0 +1,359 @@
+---
+title: 'Locking & Versioning'
+description: 'Concurrent access control and state history management'
+---
+
+## State locking
+
+State locking prevents concurrent modifications to OpenTofu state. The ORAS backend implements locking using OCI manifest tags and generation-based conflict detection.
+
+### Lock mechanism
+
+When a lock is acquired:
+
+1. **Read current lock state**: Fetch the lock manifest (if it exists)
+2. **Check for conflicts**: Verify no active lock exists or stale lock can be cleared
+3. **Increment generation**: Create a new lock manifest with `generation = current + 1`
+4. **Tag lock manifest**: Tag with `locked-<workspace>`
+5. **Verify ownership**: Re-read the lock to confirm we hold it (race detection)
+
+### Lock manifest structure
+
+Lock manifests include metadata for conflict detection:
+
+```json
+{
+  "artifactType": "application/vnd.terraform.lock.v1",
+  "annotations": {
+    "org.terraform.workspace": "production",
+    "org.terraform.lock.id": "abc123-def456-789",
+    "org.terraform.lock.info": "{\"ID\":\"abc123\",\"Operation\":\"OperationTypeApply\"}",
+    "org.terraform.lock.generation": "{\"generation\":42,\"lease_expiry\":1709478600000000000,\"holder_id\":\"abc123\"}"
+  }
+}
+```
+
+### Lock annotations
+
+| Annotation | Type | Purpose |
+|------------|------|----------|
+| `org.terraform.lock.id` | string | Unique lock identifier |
+| `org.terraform.lock.info` | JSON | Detailed lock holder information |
+| `org.terraform.lock.generation` | JSON | Generation counter and expiry timestamp |
+
+### Generation-based conflict detection
+
+The backend uses a generation counter to detect race conditions:
+
+```
+Process A reads lock: generation=5
+Process B reads lock: generation=5
+
+Process A writes lock: generation=6
+Process B writes lock: generation=6  (same!)
+
+Process A verifies: generation=6, holder=A ✓
+Process B verifies: generation=6, holder=A ✗ (conflict detected)
+```
+
+Verification checks both:
+- **Generation number**: Must match what we wrote
+- **Holder ID**: Must match our lock ID
+
+<Info>
+Double-checking holder ID prevents false positives when two processes read the same base generation and both increment to the same value.
+</Info>
+
+## Lock TTL and stale lock cleanup
+
+Set `lock_ttl` to automatically clear stale locks:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/infra-state"
+    lock_ttl   = 300  # 5 minutes
+  }
+}
+```
+
+### How TTL works
+
+1. **On lock acquisition**: Calculate `lease_expiry = now + lock_ttl` and store in manifest
+2. **On lock check**: Compare `now > lease_expiry` to detect staleness
+3. **Automatic cleanup**: If stale, delete the lock manifest and proceed with acquisition
+
+<Note>
+Lock TTL uses `lease_expiry` instead of `created_at + TTL` to avoid clock synchronization issues between lock creator and verifier.
+</Note>
+
+### When to use lock TTL
+
+| Scenario | Recommendation |
+|----------|----------------|
+| CI/CD pipelines with timeouts | Set `lock_ttl` to pipeline timeout + margin |
+| Interactive development | Leave at 0 or set high value (3600+) |
+| Shared team environments | Set to reasonable operation time (300-900) |
+
+<Warning>
+If `lock_ttl = 0` (default), stale locks are never automatically cleared. Manual intervention with `tofu force-unlock` is required.
+</Warning>
+
+## Lock cleanup on delete-unsupported registries
+
+Some registries (notably GHCR) return HTTP 405 for manifest deletion. The backend uses a fallback mechanism:
+
+### Fallback strategy
+
+1. **Try direct deletion**: Attempt to delete the lock manifest
+2. **Detect 405 error**: Check if deletion is unsupported
+3. **Retag to unlocked**: Tag an empty "unlocked" manifest to `locked-<workspace>`
+4. **Fallback to GitHub API**: For GHCR, use GitHub Packages API to delete the tag
+
+```go
+// Primary: Try OCI deletion
+err := repo.Delete(ctx, lockManifest)
+
+if isDeleteUnsupported(err) {
+  // Fallback 1: Retag to unlocked manifest
+  retagToUnlocked(ctx)
+  
+  // Fallback 2: GitHub API (GHCR only)
+  tryDeleteGHCRTag(ctx, repo, tag)
+}
+```
+
+### GitHub API deletion
+
+For GHCR repositories, the backend:
+
+1. Parses the repository to extract owner and package name
+2. Lists package versions from GitHub Packages API
+3. Finds the version ID matching the lock tag
+4. Deletes the version via `DELETE /orgs/{owner}/packages/container/{package}/versions/{id}`
+
+<Tip>
+Ensure your GitHub token has `delete:packages` permission when using `max_versions` with GHCR. This enables automatic cleanup of old version tags.
+</Tip>
+
+## State versioning
+
+Versioning preserves historical state snapshots with automatic retention management.
+
+### Enabling versioning
+
+```hcl
+terraform {
+  backend "oras" {
+    repository   = "ghcr.io/myorg/infra-state"
+    max_versions = 10  # Keep last 10 versions
+  }
+}
+```
+
+### Version lifecycle
+
+Each `tofu apply` creates a new version:
+
+```
+Initial state: state-default (v1)
+↓
+Apply #1: state-default (v1), state-default-v1
+↓
+Apply #2: state-default (v2), state-default-v1, state-default-v2
+↓
+Apply #11: state-default (v11), state-default-v2..v11
+           └─ v1 deleted (exceeds max_versions=10)
+```
+
+### Version tag format
+
+Versioned states use the pattern `state-<workspace>-v<N>`:
+
+```
+state-default-v1
+state-default-v2
+state-production-v42
+state-ws-abc123-v7  (hashed workspace name)
+```
+
+### Retention enforcement
+
+When version count exceeds `max_versions`:
+
+1. **List all versions**: Scan tags matching `state-<workspace>-v*`
+2. **Sort numerically**: Order versions by number (not string comparison)
+3. **Identify excess**: Calculate `toDelete = versions[:(len - max_versions)]`
+4. **Group by digest**: Group tags pointing to the same manifest
+5. **Detach keep tags**: Re-tag versions to keep to new manifests
+6. **Delete old manifests**: Remove manifests with only delete tags
+
+### Async retention with semaphore
+
+Retention runs asynchronously to avoid blocking state writes:
+
+```go
+// Semaphore limits concurrent cleanups
+sem := make(chan struct{}, 3)
+
+select {
+case sem <- struct{}{}:
+  go func() {
+    defer func() { <-sem }()
+    enforceVersionRetention(ctx)
+  }()
+default:
+  // Skip if too many cleanups pending
+}
+```
+
+The semaphore prevents goroutine accumulation during rapid state updates.
+
+<Warning>
+Retention cleanup is asynchronous. Version count may temporarily exceed `max_versions` until background cleanup completes (within 30 seconds).
+</Warning>
+
+## Manifest detachment for retention
+
+When deleting old versions, the backend preserves versions to keep:
+
+### Why detachment is needed
+
+Multiple version tags may point to the same manifest digest:
+
+```
+state-default-v5 ──┐
+state-default-v6 ──┼─→ sha256:abc123...
+state-default-v7 ──┘
+```
+
+If we need to delete v5 and v6 but keep v7, we must:
+
+1. Create a new manifest with the same layers
+2. Retag v7 to the new manifest
+3. Delete the old manifest
+
+### Detachment implementation
+
+```go
+for digest, group := range digestGroups {
+  toDelete := tags matching deleteSet
+  toKeep := tags matching keepSet
+  
+  if len(toKeep) > 0 {
+    // Create new manifest preserving version annotation
+    newManifest := packStateManifest(layers, preservedVersion)
+    
+    // Retag keep tags to new manifest
+    for tag in toKeep {
+      Tag(newManifest, tag)
+    }
+  }
+  
+  // Delete old manifest
+  Delete(digest)
+}
+```
+
+### Version annotation preservation
+
+The new manifest preserves the `org.terraform.state.version` annotation:
+
+```json
+{
+  "annotations": {
+    "org.terraform.state.version": "7"  // Preserved from original
+  }
+}
+```
+
+This ensures `currentStateVersion()` can still read the version without scanning all tags.
+
+## Best practices
+
+### Lock TTL recommendations
+
+<AccordionGroup>
+  <Accordion title="CI/CD pipelines">
+    Set `lock_ttl` to your pipeline timeout plus a margin:
+    ```hcl
+    lock_ttl = 900  # 15 minutes for 10-min pipeline
+    ```
+  </Accordion>
+  
+  <Accordion title="Manual operations">
+    Use a high TTL or leave at 0:
+    ```hcl
+    lock_ttl = 0  # Disable automatic cleanup
+    ```
+  </Accordion>
+  
+  <Accordion title="Shared team workspaces">
+    Set to typical operation duration:
+    ```hcl
+    lock_ttl = 600  # 10 minutes for most applies
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Versioning recommendations
+
+- **Development**: `max_versions = 5` - Keep recent history without excessive storage
+- **Staging**: `max_versions = 10` - Balance between rollback capability and cost
+- **Production**: `max_versions = 20` - Extended history for compliance and auditing
+
+<Tip>
+Combine versioning with state encryption for compliance requirements. Historical versions are encrypted with the same key provider as current state.
+</Tip>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Lock timeout during apply">
+    Another process holds the lock. Options:
+    
+    1. Wait for the operation to complete
+    2. Increase `lock_ttl` to enable automatic cleanup
+    3. Use `tofu force-unlock <lock-id>` (last resort)
+  </Accordion>
+  
+  <Accordion title="Lost lock race condition">
+    Two processes tried to acquire simultaneously. The error message shows:
+    ```
+    Error: state is locked (lost race)
+    ```
+    
+    This is expected behavior. The losing process should retry.
+  </Accordion>
+  
+  <Accordion title="Version deletion fails on GHCR">
+    Ensure your GitHub token has `delete:packages` permission:
+    
+    ```bash
+    # Generate token with required scopes:
+    # - read:packages
+    # - write:packages  
+    # - delete:packages
+    ```
+  </Accordion>
+  
+  <Accordion title="Version count exceeds max_versions">
+    Retention cleanup is asynchronous. Wait up to 30 seconds for background cleanup to complete. If it persists, check logs for errors:
+    
+    ```bash
+    TF_LOG=DEBUG ghoten apply
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="ORAS Backend" icon="box" href="/concepts/oras-backend">
+    Learn about the ORAS backend architecture
+  </Card>
+  
+  <Card title="State Management" icon="database" href="/concepts/state-management">
+    Understand state storage and tag patterns
+  </Card>
+</CardGroup>

@@ -1,0 +1,433 @@
+---
+title: Troubleshooting
+description: Common issues and solutions for the ORAS backend
+---
+
+This page covers common problems you might encounter when using the ORAS backend and their solutions.
+
+## Common Issues
+
+| Problem | What to do |
+|---------|------------|
+| `unauthorized` or `denied` | Re-run `docker login`. On GHCR, ensure `read:packages` and `write:packages` scopes |
+| Lock appears stuck | Set `lock_ttl = 300` to auto-clear stale locks on next acquisition |
+| Deleting versions fails on GHCR | Ghoten falls back to GitHub Packages API; ensure package delete permission is granted |
+| Need deep diagnostics | Run with `TF_LOG=DEBUG ./ghoten plan` |
+
+## Authentication Issues
+
+### Error: unauthorized
+
+```
+Error: failed to resolve reference: unauthorized
+```
+
+**Cause**: Your registry credentials are missing or expired.
+
+**Solution**:
+
+1. Re-authenticate with your registry:
+
+```bash
+docker login ghcr.io
+```
+
+2. For GHCR, ensure your Personal Access Token (PAT) has the required scopes:
+   - `read:packages` - Required for reading state
+   - `write:packages` - Required for writing state
+   - `delete:packages` - Required for version cleanup (optional)
+
+3. Create a PAT with the required scopes:
+
+```bash
+# GitHub CLI
+gh auth login --scopes "read:packages,write:packages,delete:packages"
+
+# Or use docker login with a PAT
+echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
+```
+
+### Error: access denied
+
+```
+Error: failed to push manifest: denied
+```
+
+**Cause**: Your registry credentials don't have write permissions.
+
+**Solution**: Verify your credentials have write access to the repository. For GHCR, the repository owner or organization must grant package write permissions.
+
+## Locking Issues
+
+### Lock appears stuck
+
+**Symptom**: State remains locked even though no Terraform process is running.
+
+**Cause**: A previous Terraform operation was interrupted (crash, killed process, network failure).
+
+**Solution**:
+
+**Option 1**: Enable automatic stale lock clearing (recommended):
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/infra-state"
+    lock_ttl   = 300  # Auto-clear locks older than 5 minutes
+  }
+}
+```
+
+The next lock acquisition will automatically clear the stale lock.
+
+**Option 2**: Force unlock manually:
+
+```bash
+ghoten force-unlock LOCK_ID
+```
+
+<Warning>
+Only force-unlock if you're certain no other Terraform process is running. Force-unlocking while another process holds the lock can lead to state corruption.
+</Warning>
+
+### Error: lock ID mismatch
+
+```
+Error: lock ID mismatch: held by "abc123"
+```
+
+**Cause**: Attempting to unlock with the wrong lock ID.
+
+**Solution**: Use the correct lock ID shown in the error message, or use `force-unlock` if you're certain no other process is running.
+
+## Version Management Issues
+
+### Deleting versions fails on GHCR
+
+**Symptom**:
+
+```
+Error: oras backend retention: registry does not support OCI manifest deletion
+```
+
+**Cause**: GitHub Container Registry returns HTTP 405 (Method Not Allowed) for OCI manifest deletion.
+
+**Solution**: The backend automatically falls back to the GitHub Packages API. Ensure your credentials have the `delete:packages` scope:
+
+```bash
+gh auth refresh --scopes "read:packages,write:packages,delete:packages"
+```
+
+### Error: version retention failed
+
+**Symptom**: Warnings in logs about failed version cleanup.
+
+**Cause**: Version cleanup happens asynchronously and may fail due to transient network errors or permissions.
+
+**Solution**: This is non-fatal. Version cleanup will be retried on the next state write. If the problem persists:
+
+1. Check your registry credentials have delete permissions
+2. Verify network connectivity to the registry
+3. Check registry logs for rate limiting or quota issues
+
+## Configuration Issues
+
+### Error: repository must not be empty
+
+```
+Error: repository must not be empty (set via config or TF_BACKEND_ORAS_REPOSITORY)
+```
+
+**Cause**: The `repository` parameter is not set.
+
+**Solution**: Set the repository in your backend configuration:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/infra-state"
+  }
+}
+```
+
+Or via environment variable:
+
+```bash
+export TF_BACKEND_ORAS_REPOSITORY="ghcr.io/myorg/infra-state"
+```
+
+### Error: repository must not include a tag or digest
+
+```
+Error: repository must not include a tag or digest
+```
+
+**Cause**: The repository parameter includes a tag (`:latest`) or digest (`@sha256:...`).
+
+**Solution**: Remove the tag or digest from the repository parameter:
+
+```hcl
+# Wrong
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/infra-state:latest"
+  }
+}
+
+# Correct
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/infra-state"
+  }
+}
+```
+
+### Error: unsupported compression
+
+```
+Error: unsupported compression "bzip2" (supported: none, gzip)
+```
+
+**Cause**: Invalid compression format specified.
+
+**Solution**: Use only supported compression formats (`none` or `gzip`):
+
+```hcl
+terraform {
+  backend "oras" {
+    repository  = "ghcr.io/myorg/infra-state"
+    compression = "gzip"  # or "none"
+  }
+}
+```
+
+## Network and Connectivity Issues
+
+### Error: connection timeout
+
+```
+Error: context deadline exceeded
+```
+
+**Cause**: Network connectivity issues or slow registry response.
+
+**Solution**:
+
+1. Check network connectivity to the registry:
+
+```bash
+curl -I https://ghcr.io/v2/
+```
+
+2. Increase retry settings:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository     = "ghcr.io/myorg/infra-state"
+    retry_max      = 5
+    retry_wait_max = 60
+  }
+}
+```
+
+3. Check if you're behind a corporate proxy and configure Docker accordingly
+
+### Error: TLS certificate verification failed
+
+```
+Error: x509: certificate signed by unknown authority
+```
+
+**Cause**: Registry uses a self-signed certificate or corporate CA.
+
+**Solution**:
+
+**Option 1**: Add the CA certificate (recommended):
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "registry.example.com/myorg/state"
+    ca_file    = "/path/to/ca-bundle.pem"
+  }
+}
+```
+
+**Option 2**: Skip TLS verification (not recommended for production):
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "registry.example.com/myorg/state"
+    insecure   = true
+  }
+}
+```
+
+<Warning>
+Using `insecure = true` disables TLS certificate verification, which can expose you to man-in-the-middle attacks. Only use this for testing or when connecting to registries on trusted networks.
+</Warning>
+
+## State Corruption or Inconsistency
+
+### Error: inconsistent read
+
+```
+Error: failed to verify lock acquisition: inconsistent read
+```
+
+**Cause**: Transient network error or registry inconsistency during lock acquisition.
+
+**Solution**: This error is automatically retried. If it persists:
+
+1. Check registry health and availability
+2. Verify network stability
+3. Increase retry configuration
+
+### Error: unexpected state manifest artifactType
+
+```
+Error: unexpected state manifest artifactType "application/vnd.docker.container.image.v1" for "state-default"
+```
+
+**Cause**: The tag is pointing to a non-state artifact (e.g., a Docker image).
+
+**Solution**:
+
+1. Verify you're using the correct repository
+2. Check if someone manually pushed artifacts to state tags
+3. Delete the incorrect manifest and reinitialize the backend
+
+## Performance Issues
+
+### Slow state operations
+
+**Symptom**: `terraform plan` or `apply` operations are slower than expected.
+
+**Possible causes and solutions**:
+
+1. **Rate limiting too aggressive**: Increase `rate_limit` or disable it
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/infra-state"
+    rate_limit = 0  # Disable rate limiting
+  }
+}
+```
+
+2. **Network latency**: Use a registry geographically closer to your location
+
+3. **Large state file**: Enable compression
+
+```hcl
+terraform {
+  backend "oras" {
+    repository  = "ghcr.io/myorg/infra-state"
+    compression = "gzip"
+  }
+}
+```
+
+4. **Registry performance**: Check registry metrics and consider upgrading or switching registries
+
+## Debugging
+
+### Enable debug logging
+
+For detailed diagnostic information:
+
+```bash
+TF_LOG=DEBUG ghoten plan
+```
+
+This will show:
+- HTTP requests to the registry
+- Authentication flow
+- Retry attempts
+- Lock operations
+- State read/write operations
+
+### Enable trace logging for even more detail
+
+```bash
+TF_LOG=TRACE ghoten plan
+```
+
+### Check backend configuration
+
+Verify your backend is configured correctly:
+
+```bash
+ghoten init
+```
+
+Look for the backend initialization output:
+
+```
+Initializing the backend...
+
+Successfully configured the backend "oras"!
+```
+
+## Registry-Specific Issues
+
+### GitHub Container Registry (GHCR)
+
+**Package visibility issues**:
+
+- Packages inherit repository visibility by default
+- You may need to manually adjust package visibility in GitHub settings
+- Organization packages require organization-level permissions
+
+**PAT expiration**:
+
+- GitHub PATs can expire
+- Use `gh auth status` to check token validity
+- Refresh tokens with `gh auth refresh`
+
+### Docker Hub
+
+**Rate limiting**:
+
+- Docker Hub has strict rate limits for free accounts
+- Enable client-side rate limiting:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository       = "docker.io/myuser/state"
+    rate_limit       = 3
+    rate_limit_burst = 10
+  }
+}
+```
+
+**Authentication**:
+
+- Docker Hub requires username, not email
+- Use access tokens instead of passwords
+
+### Private Registries
+
+**Self-signed certificates**: Use the `ca_file` parameter to trust custom CAs
+
+**Authentication methods**: Ensure your registry supports Docker credential helpers
+
+**Firewall/proxy**: Configure Docker to work with your network setup
+
+## Getting Help
+
+If you continue to experience issues:
+
+1. Enable debug logging and capture the output
+2. Check the [GitHub issues](https://github.com/vmvarela/ghoten) for similar problems
+3. Verify your registry's status and rate limits
+4. Test with a simple configuration to isolate the problem
+5. Open a new issue with:
+   - Backend configuration (redact sensitive values)
+   - Debug logs (redact sensitive information)
+   - Steps to reproduce
+   - Expected vs actual behavior

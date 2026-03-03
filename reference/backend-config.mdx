@@ -1,0 +1,345 @@
+---
+title: Backend Configuration
+description: Complete guide to configuring the ORAS backend for OpenTofu state storage
+---
+
+The ORAS backend stores OpenTofu state as OCI artifacts in container registries. This guide covers all configuration options and best practices.
+
+## Overview
+
+The ORAS backend leverages OCI registries you already operate (such as GitHub Container Registry, Docker Hub, or AWS ECR) to store Terraform/OpenTofu state files. This eliminates the need for dedicated state storage infrastructure while providing:
+
+- Native registry authentication and authorization
+- Built-in audit trails through registry logs
+- State versioning and compression
+- Distributed locking with configurable TTL
+- Rate limiting for API protection
+
+## Minimal Configuration
+
+The simplest valid backend configuration requires only the `repository` parameter:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/acme/infra-state"
+  }
+}
+```
+
+## Production Configuration
+
+For production environments, use this baseline configuration with encryption, compression, and versioning:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository   = "ghcr.io/myorg/infra-state"
+    compression  = "gzip"
+    lock_ttl     = 300
+    max_versions = 10
+    retry_max    = 3
+  }
+
+  encryption {
+    key_provider "pbkdf2" "main" {
+      passphrase = var.state_passphrase
+    }
+    method "aes_gcm" "main" {
+      key_provider = key_provider.pbkdf2.main
+    }
+    state { method = method.aes_gcm.main }
+    plan  { method = method.aes_gcm.main }
+  }
+}
+```
+
+<Warning>
+For production systems, prefer a KMS-backed key provider over PBKDF2 passphrases for better security.
+</Warning>
+
+## Configuration Structure
+
+The backend configuration is organized into several functional areas:
+
+### Repository Settings
+
+- **repository**: OCI registry and repository path (required)
+- **insecure**: TLS verification control
+- **ca_file**: Custom CA certificate bundle
+
+### Retry Configuration
+
+- **retry_max**: Number of retry attempts for transient errors
+- **retry_wait_min**: Minimum backoff time between retries
+- **retry_wait_max**: Maximum backoff time between retries
+
+### Performance Tuning
+
+- **compression**: State file compression (none or gzip)
+- **rate_limit**: Maximum requests per second
+- **rate_limit_burst**: Burst capacity for rate limiting
+
+### State Management
+
+- **lock_ttl**: Automatic stale lock cleanup threshold
+- **max_versions**: Historical state version retention
+
+## How State is Stored
+
+The ORAS backend uses OCI tags to organize state within your repository:
+
+| Purpose | Tag Pattern | Example |
+|---------|-------------|----------|
+| Current state | `state-<workspace>` | `state-default` |
+| Active lock | `locked-<workspace>` | `locked-production` |
+| Historical version | `state-<workspace>-v<N>` | `state-default-v5` |
+| Unlocked state (GHCR) | `unlocked-<workspace>` | `unlocked-staging` |
+
+<Info>
+Workspace names that aren't valid OCI tags are hashed to `ws-<sha256>` with the original name stored in annotations.
+</Info>
+
+## Authentication
+
+Credentials are resolved in the following order:
+
+1. **Docker credential helpers** - `docker login` credentials and credential stores
+2. **CLI host credentials** - `ghoten login` or Terraform-style host tokens
+
+<Tip>
+Most authentication issues can be resolved by running `docker login <registry>` before using the backend.
+</Tip>
+
+For GitHub Container Registry, ensure your token has these scopes:
+- `read:packages`
+- `write:packages`
+- `delete:packages` (for workspace deletion)
+
+## State Versioning
+
+When `max_versions > 0`, the backend automatically maintains historical state versions:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository   = "ghcr.io/myorg/state"
+    max_versions = 10
+  }
+}
+```
+
+This configuration:
+- Enables state versioning
+- Retains the last 10 versions
+- Automatically prunes older versions
+- Creates tags like `state-default-v1`, `state-default-v2`, etc.
+
+<Note>
+Setting `max_versions = 0` (default) disables versioning entirely.
+</Note>
+
+## Locking Behavior
+
+The backend implements distributed locking using OCI manifests:
+
+### Basic Locking
+
+By default (`lock_ttl = 0`), locks remain until explicitly released:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/state"
+    lock_ttl   = 0  # Manual lock management
+  }
+}
+```
+
+### Automatic Stale Lock Cleanup
+
+Set `lock_ttl > 0` to enable automatic cleanup of stale locks:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "ghcr.io/myorg/state"
+    lock_ttl   = 300  # 5 minutes in seconds
+  }
+}
+```
+
+Locks older than the TTL are automatically cleared during the next lock acquisition attempt.
+
+<Warning>
+Be cautious with low TTL values in CI/CD environments where operations may legitimately take several minutes.
+</Warning>
+
+## Compression
+
+State files can be compressed to reduce storage and transfer costs:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository  = "ghcr.io/myorg/state"
+    compression = "gzip"  # or "none"
+  }
+}
+```
+
+- **none** (default): No compression, faster for small states
+- **gzip**: Compressed, recommended for states > 1MB
+
+## Rate Limiting
+
+Protect your registry from excessive API calls:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository        = "ghcr.io/myorg/state"
+    rate_limit        = 10  # Max 10 requests/second
+    rate_limit_burst  = 20  # Allow bursts up to 20
+  }
+}
+```
+
+<Info>
+Setting `rate_limit = 0` (default) disables rate limiting.
+</Info>
+
+## Retry Configuration
+
+Configure retry behavior for transient registry errors:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository      = "ghcr.io/myorg/state"
+    retry_max       = 3   # Retry up to 3 times
+    retry_wait_min  = 1   # Start with 1 second
+    retry_wait_max  = 30  # Cap at 30 seconds
+  }
+}
+```
+
+The backend uses exponential backoff with a 2x multiplier between retry attempts.
+
+## TLS Configuration
+
+### Skip TLS Verification (Development Only)
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "registry.local/state"
+    insecure   = true
+  }
+}
+```
+
+<Warning>
+Never use `insecure = true` in production. This disables TLS certificate verification.
+</Warning>
+
+### Custom CA Certificate
+
+For registries with self-signed or internal CA certificates:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository = "registry.internal/state"
+    ca_file    = "/etc/ssl/certs/internal-ca.pem"
+  }
+}
+```
+
+The `ca_file` must point to a PEM-encoded CA certificate bundle.
+
+## Environment Variables
+
+Most configuration options can be set via environment variables. See the [Environment Variables](/reference/environment-variables) reference for the complete list.
+
+## Complete Example
+
+Here's a production-ready configuration with all recommended settings:
+
+```hcl
+terraform {
+  backend "oras" {
+    # Registry configuration
+    repository = "ghcr.io/myorg/terraform-state"
+    
+    # Performance optimization
+    compression = "gzip"
+    
+    # State management
+    max_versions = 10
+    lock_ttl     = 300  # 5 minutes
+    
+    # Reliability
+    retry_max      = 3
+    retry_wait_min = 1
+    retry_wait_max = 30
+    
+    # Rate limiting
+    rate_limit       = 10
+    rate_limit_burst = 20
+  }
+
+  encryption {
+    key_provider "aws_kms" "main" {
+      kms_key_id = "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012"
+    }
+    method "aes_gcm" "main" {
+      key_provider = key_provider.aws_kms.main
+    }
+    state { method = method.aes_gcm.main }
+    plan  { method = method.aes_gcm.main }
+  }
+}
+```
+
+## Troubleshooting
+
+### Authorization Errors
+
+**Problem**: `unauthorized` or `denied` errors
+
+**Solution**: 
+1. Run `docker login <registry>`
+2. For GHCR, ensure token has `read:packages` and `write:packages` scopes
+3. Verify repository permissions
+
+### Stuck Locks
+
+**Problem**: Lock appears permanently held
+
+**Solution**: Set `lock_ttl = 300` to enable automatic stale lock cleanup
+
+### Version Deletion Failures on GHCR
+
+**Problem**: Cannot delete state versions
+
+**Solution**: The backend automatically falls back to GitHub Packages API. Ensure your token has `delete:packages` scope.
+
+### Debug Logging
+
+Enable detailed logging for troubleshooting:
+
+```bash
+TF_LOG=DEBUG ghoten plan
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Backend Parameters" icon="sliders" href="/reference/backend-parameters">
+    Detailed reference for all backend configuration parameters
+  </Card>
+  <Card title="Environment Variables" icon="terminal" href="/reference/environment-variables">
+    Complete list of supported environment variables
+  </Card>
+</CardGroup>

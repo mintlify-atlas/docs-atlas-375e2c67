@@ -1,80 +1,256 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Get from clone to a working ghoten plan with OCI-backed state in minutes"
 ---
 
-## Get started in three steps
+## Overview
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This guide gets you from zero to a working `ghoten plan` with an OCI-backed state in minutes. It focuses on the happy path and skips optional configuration.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+For full backend tuning (retry, rate limits, TLS options), see the [ORAS Backend Guide](/concepts/oras-backend) after completing this quickstart.
+</Note>
+
+## Prerequisites
+
+- Git installed
+- Docker installed (for registry authentication)
+- A GitHub account with a personal access token (for GHCR)
+- Go 1.21+ (if building from source)
+
+## Installation
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone Ghoten from GitHub:
+    
+    ```bash
+    git clone https://github.com/vmvarela/ghoten.git
+    cd ghoten
+    ```
+  </Step>
+  
+  <Step title="Build the binary">
+    Build `ghoten` locally using the provided Makefile:
+    
+    ```bash
+    make build
+    ```
+    
+    This compiles the binary to `./ghoten` in your current directory.
+  </Step>
+  
+  <Step title="Verify installation">
+    Check that the build succeeded:
+    
+    ```bash
+    ./ghoten version
+    ```
+    
+    You should see output similar to:
+    
+    ```
+    OpenTofu v1.8.0
+    on linux_amd64
+    ```
+  </Step>
+</Steps>
+
+<Accordion title="Using Docker instead">
+For CI or reproducible local environments, you can use the published image:
+
+```bash
+docker pull ghcr.io/vmvarela/ghoten:<version>
+```
+
+Replace `<version>` with the specific release tag you want to use.
+</Accordion>
+
+## Configure the ORAS Backend
+
+<Steps>
+  <Step title="Create a basic configuration">
+    In your infrastructure directory, create or update your `main.tf` with the minimal ORAS backend:
+    
+    ```hcl
+    terraform {
+      backend "oras" {
+        repository = "ghcr.io/acme/infra-state"
+      }
+    }
+    ```
+    
+    Replace `acme` with your GitHub username or organization.
+    
+    <Warning>
+    The `repository` parameter is **required**. Everything else is optional tuning.
+    </Warning>
+  </Step>
+  
+  <Step title="Authenticate to the registry">
+    Login to GitHub Container Registry using Docker:
+    
+    ```bash
+    echo "$GITHUB_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin
+    ```
+    
+    Replace `YOUR_GITHUB_USER` with your GitHub username.
+    
+    <Note>
+    Your `GITHUB_TOKEN` needs `read:packages` and `write:packages` scopes.
+    </Note>
+  </Step>
+</Steps>
+
+## Initialize and Run
+
+<Steps>
+  <Step title="Initialize the backend">
+    Initialize your OpenTofu configuration:
+    
+    ```bash
+    ./ghoten init
+    ```
+    
+    You should see:
+    
+    ```
+    Initializing the backend...
+    
+    Successfully configured the backend "oras"!
+    ```
+  </Step>
+  
+  <Step title="Run your first plan">
+    Execute a plan to verify everything works:
+    
+    ```bash
+    ./ghoten plan
+    ```
+    
+    Your state is now stored in GHCR as an OCI artifact.
+  </Step>
+</Steps>
+
+<Accordion title="Debugging issues">
+If something fails, enable debug logging immediately instead of guessing:
+
+```bash
+TF_LOG=DEBUG ./ghoten plan
+```
+
+This provides detailed information about authentication, registry communication, and state operations.
+</Accordion>
+
+## Production Baseline
+
+Once the minimal setup works, upgrade to this production baseline:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository   = "ghcr.io/myorg/infra-state"
+    compression  = "gzip"
+    lock_ttl     = 300
+    max_versions = 10
+  }
+}
+```
+
+**What each parameter does:**
+
+- `compression = "gzip"` - Reduces state file size for faster transfers
+- `lock_ttl = 300` - Auto-clears stale locks after 5 minutes (avoids manual cleanup after crashed jobs)
+- `max_versions = 10` - Keeps 10 historical versions (maintains history without unbounded growth)
+
+<Note>
+These are sensible defaults for most teams. Only tune further if you observe concrete bottlenecks.
+</Note>
+
+## Optional: Add State Encryption
+
+For production systems, enable OpenTofu state encryption:
+
+```hcl
+terraform {
+  backend "oras" {
+    repository   = "ghcr.io/myorg/infra-state"
+    compression  = "gzip"
+    lock_ttl     = 300
+    max_versions = 10
+  }
+
+  encryption {
+    key_provider "pbkdf2" "main" {
+      passphrase = var.state_passphrase
+    }
+    method "aes_gcm" "main" {
+      key_provider = key_provider.pbkdf2.main
+    }
+    state { method = method.aes_gcm.main }
+    plan  { method = method.aes_gcm.main }
+  }
+}
+```
+
+<Warning>
+For real production systems, prefer a KMS-backed key provider over PBKDF2 passphrases.
+</Warning>
+
+## Verify State Storage
+
+Check that your state was pushed to GHCR:
+
+1. Navigate to your GitHub organization or user profile
+2. Go to **Packages**
+3. Find the `infra-state` package
+4. You should see tags like:
+   - `state-default` (current state for default workspace)
+   - `locked-default` (active lock, if any)
+   - `state-default-v1`, `state-default-v2` (historical versions)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="GitHub Action" icon="github" href="/usage/github-action">
+    Set up CI/CD pipelines with the official GitHub Action.
+  </Card>
+  
+  <Card title="ORAS Backend Guide" icon="box" href="/concepts/oras-backend">
+    Learn how state, locks, and versions are represented in OCI.
+  </Card>
+  
+  <Card title="Configuration Reference" icon="gear" href="/reference/backend-parameters">
+    Explore all available backend configuration options.
+  </Card>
+  
+  <Card title="Testing Guide" icon="flask" href="/development/testing">
+    Run tests locally and understand the testing workflow.
+  </Card>
+</CardGroup>
+
+## Common Issues
+
+<AccordionGroup>
+  <Accordion title="Authentication failed">
+    **Problem:** `unauthorized` or `denied` errors
+    
+    **Solution:** Re-run `docker login`. On GHCR, ensure your token has `read:packages` and `write:packages` scopes.
+  </Accordion>
+  
+  <Accordion title="Lock appears stuck">
+    **Problem:** Lock is held after a crashed job
+    
+    **Solution:** Set `lock_ttl = 300` in your backend config to auto-clear stale locks on next acquisition.
+  </Accordion>
+  
+  <Accordion title="Cannot delete versions on GHCR">
+    **Problem:** Version deletion fails
+    
+    **Solution:** Ghoten falls back to GitHub Packages API. Ensure your token has package delete permission.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+For deep diagnostics, always run with `TF_LOG=DEBUG ./ghoten plan`.
 </Note>
